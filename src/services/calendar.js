@@ -1,394 +1,191 @@
 const { google } = require('googleapis');
-const logger = require('./logger');
 
-// ── Auth con Google usando refresh token ───────────────────────
-function getGoogleAuth() {
-  const oauth2Client = new google.auth.OAuth2(
+function getAuthClient() {
+  const auth = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
     process.env.GOOGLE_REDIRECT_URI
   );
-  oauth2Client.setCredentials({
-    refresh_token: process.env.GOOGLE_REFRESH_TOKEN,
-  });
-  return oauth2Client;
+  auth.setCredentials({ refresh_token: process.env.GOOGLE_REFRESH_TOKEN });
+  return auth;
 }
 
 function getCalendar() {
-  return google.calendar({ version: 'v3', auth: getGoogleAuth() });
+  return google.calendar({ version: 'v3', auth: getAuthClient() });
 }
 
-const CALENDAR_ID = process.env.GOOGLE_CALENDAR_ID || 'primary';
-const DURATION_MINUTES = parseInt(process.env.APPOINTMENT_DURATION_MINUTES) || 30;
-const TIMEZONE = process.env.TIMEZONE || 'America/Santo_Domingo';
+const CALENDAR_ID  = process.env.GOOGLE_CALENDAR_ID || 'primary';
+const SLOT_MINUTES = parseInt(process.env.APPOINTMENT_DURATION_MINUTES || '30');
+const TZ           = process.env.TIMEZONE || 'America/Santo_Domingo';
+const START_HOUR   = parseInt((process.env.WORKING_HOURS_START || '08:00').split(':')[0]);
+const END_HOUR     = parseInt((process.env.WORKING_HOURS_END   || '17:00').split(':')[0]);
+const WORKING_DAYS = (process.env.WORKING_DAYS || '1,2,3,4,5').split(',').map(Number);
 
-// ── 1. VERIFICAR DISPONIBILIDAD ────────────────────────────────
-async function checkAvailability({ preferred_date, num_slots = 3 }) {
-  try {
-    const calendar = getCalendar();
-    const now = new Date();
-
-    // Calcular rango de búsqueda
-    let searchStart, searchEnd;
-    if (preferred_date) {
-      searchStart = new Date(`${preferred_date}T${process.env.BUSINESS_HOURS_START}:00`);
-      searchEnd = new Date(`${preferred_date}T${process.env.BUSINESS_HOURS_END}:00`);
-    } else {
-      // Próximos 7 días
-      searchStart = now < getBusinessStartToday() ? getBusinessStartToday() : now;
-      searchEnd = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
-    }
-
-    // Obtener eventos existentes en el rango
-    const eventsResponse = await calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: searchStart.toISOString(),
-      timeMax: searchEnd.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-    });
-
-    const busySlots = eventsResponse.data.items
-      .filter(e => e.status !== 'cancelled')
-      .map(e => ({
-        start: new Date(e.start.dateTime || e.start.date),
-        end: new Date(e.end.dateTime || e.end.date),
-      }));
-
-    // Generar slots disponibles
-    const availableSlots = generateAvailableSlots(searchStart, searchEnd, busySlots, num_slots);
-
-    if (availableSlots.length === 0) {
-      return {
-        success: true,
-        available: false,
-        message: 'No hay horarios disponibles en ese rango. Prueba otra fecha.',
-        slots: [],
-      };
-    }
-
-    return {
-      success: true,
-      available: true,
-      slots: availableSlots.map(slot => ({
-        datetime: slot.toISOString(),
-        formatted: formatDateTimeSpanish(slot),
-        iso: slot.toISOString(),
-      })),
-    };
-  } catch (error) {
-    logger.error('Error checking availability', { error: error.message });
-    return { success: false, error: 'No pude verificar la disponibilidad. Intenta de nuevo.' };
-  }
+// Convierte fecha UTC a hora local de Santo Domingo
+function toLocalDate(date) {
+  const tzDate = new Date(date.toLocaleString('en-US', { timeZone: TZ }));
+  return tzDate;
 }
 
-function getBusinessStartToday() {
-  const [h, m] = (process.env.BUSINESS_HOURS_START || '08:00').split(':');
-  const d = new Date();
-  d.setHours(parseInt(h), parseInt(m), 0, 0);
-  return d;
-}
+async function checkAvailability({ days_ahead = 14, preferred_time = null, num_slots = 20 } = {}) {
+  const calendar = getCalendar();
+  const now      = new Date();
+  const maxDate  = new Date(now);
+  maxDate.setDate(maxDate.getDate() + days_ahead);
 
-function generateAvailableSlots(start, end, busySlots, maxSlots) {
-  const slots = [];
-  const [startH, startM] = (process.env.BUSINESS_HOURS_START || '08:00').split(':');
-  const [endH, endM] = (process.env.BUSINESS_HOURS_END || '17:00').split(':');
-  const businessDays = (process.env.BUSINESS_DAYS || '1,2,3,4,5').split(',').map(Number);
+  const res = await calendar.events.list({
+    calendarId: CALENDAR_ID,
+    timeMin: now.toISOString(),
+    timeMax: maxDate.toISOString(),
+    singleEvents: true,
+    orderBy: 'startTime',
+  });
 
-  let current = new Date(start);
-  // Alinear al próximo slot limpio (cada DURATION_MINUTES)
-  const mins = current.getMinutes();
-  const remainder = mins % DURATION_MINUTES;
-  if (remainder !== 0) {
-    current.setMinutes(mins + (DURATION_MINUTES - remainder));
-  }
-  current.setSeconds(0, 0);
+  const busySlots = (res.data.items || []).map(e => ({
+    start: new Date(e.start.dateTime || e.start.date),
+    end:   new Date(e.end.dateTime   || e.end.date),
+  }));
 
-  while (slots.length < maxSlots && current < end) {
-    const dayOfWeek = current.getDay() === 0 ? 7 : current.getDay(); // 1=Lunes, 7=Domingo
-    const hour = current.getHours();
-    const minute = current.getMinutes();
-    const businessStart = parseInt(startH) * 60 + parseInt(startM);
-    const businessEnd = parseInt(endH) * 60 + parseInt(endM);
-    const currentMins = hour * 60 + minute;
+  const freeSlots = [];
+  const slotsByDay = {};
 
-    if (
-      businessDays.includes(dayOfWeek) &&
-      currentMins >= businessStart &&
-      currentMins + DURATION_MINUTES <= businessEnd
-    ) {
-      const slotEnd = new Date(current.getTime() + DURATION_MINUTES * 60 * 1000);
-      const isAvailable = !busySlots.some(
-        busy =>
-          (current >= busy.start && current < busy.end) ||
-          (slotEnd > busy.start && slotEnd <= busy.end) ||
-          (current <= busy.start && slotEnd >= busy.end)
-      );
-      if (isAvailable) slots.push(new Date(current));
-    }
+  // Empezar desde mañana a las 8am hora local
+  const startDate = new Date(now);
+  startDate.setDate(startDate.getDate() + 1);
 
-    // Avanzar al siguiente slot
-    current = new Date(current.getTime() + DURATION_MINUTES * 60 * 1000);
+  // Crear cursor en hora local de Santo Domingo
+  const localStart = new Date(startDate.toLocaleString('en-US', { timeZone: TZ }));
+  localStart.setHours(START_HOUR, 0, 0, 0);
 
-    // Si llegamos al fin del día de trabajo, saltar al día siguiente
-    const nextHour = current.getHours();
-    const nextMins = current.getHours() * 60 + current.getMinutes();
-    if (nextMins >= parseInt(endH) * 60 + parseInt(endM)) {
-      current.setDate(current.getDate() + 1);
-      current.setHours(parseInt(startH), parseInt(startM), 0, 0);
+  // Convertir de vuelta a UTC para comparaciones
+  const offset = startDate.getTime() - localStart.getTime();
+
+  const cursor = new Date(localStart.getTime() - offset);
+  cursor.setHours(START_HOUR + 4, 0, 0, 0); // UTC+4 offset para Santo Domingo (UTC-4 = UTC+20... simplificado)
+
+  // Approach más simple: iterar por días
+  const dayStart = new Date(now);
+  dayStart.setDate(dayStart.getDate() + 1);
+  dayStart.setHours(0, 0, 0, 0);
+
+  for (let d = 0; d < days_ahead && freeSlots.length < num_slots; d++) {
+    const currentDay = new Date(dayStart);
+    currentDay.setDate(dayStart.getDate() + d);
+
+    // Obtener día de la semana en hora local
+    const localDay = new Date(currentDay.toLocaleString('en-US', { timeZone: TZ }));
+    const dayOfWeek = localDay.getDay();
+
+    if (!WORKING_DAYS.includes(dayOfWeek)) continue;
+
+    const dateKey = currentDay.toDateString();
+    slotsByDay[dateKey] = 0;
+
+    // Generar slots para este día
+    for (let h = START_HOUR; h < END_HOUR; h++) {
+      for (let m = 0; m < 60; m += SLOT_MINUTES) {
+        if (freeSlots.length >= num_slots) break;
+        if ((slotsByDay[dateKey] || 0) >= 4) break;
+
+        // Crear slot en hora local y convertir a UTC
+        const localSlotStr = `${currentDay.getFullYear()}-${String(currentDay.getMonth()+1).padStart(2,'0')}-${String(currentDay.getDate()).padStart(2,'0')}T${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}:00`;
+        
+        // Crear fecha en zona horaria local
+        const slotLocal = new Date(localSlotStr + '-04:00'); // Santo Domingo es UTC-4
+        const slotEnd   = new Date(slotLocal.getTime() + SLOT_MINUTES * 60 * 1000);
+
+        if (slotLocal < now) continue;
+
+        const isBusy = busySlots.some(b => slotLocal < b.end && slotEnd > b.start);
+
+        const matchesPref = !preferred_time ||
+          (preferred_time === 'mañana' && h < 12) ||
+          (preferred_time === 'manana' && h < 12) ||
+          (preferred_time === 'tarde'  && h >= 12);
+
+        if (!isBusy && matchesPref) {
+          freeSlots.push({
+            start:     slotLocal.toISOString(),
+            end:       slotEnd.toISOString(),
+            label:     formatSlotLabelLocal(localDay.getDay(), currentDay.getDate(), currentDay.getMonth(), h, m),
+            formatted: formatSlotLabelLocal(localDay.getDay(), currentDay.getDate(), currentDay.getMonth(), h, m),
+            iso:       slotLocal.toISOString(),
+          });
+          slotsByDay[dateKey] = (slotsByDay[dateKey] || 0) + 1;
+        }
+      }
     }
   }
 
-  return slots;
+  return { available: freeSlots.length > 0, slots: freeSlots, success: true };
 }
 
-function formatDateTimeSpanish(date) {
-  const days = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+function formatSlotLabelLocal(dayOfWeek, dayNum, month, h, m) {
+  const days   = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
   const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
-  const day = days[date.getDay()];
-  const dayNum = date.getDate();
-  const month = months[date.getMonth()];
-  const hour = date.getHours();
-  const minute = date.getMinutes().toString().padStart(2, '0');
-  const ampm = hour >= 12 ? 'de la tarde' : 'de la mañana';
-  const h12 = hour > 12 ? hour - 12 : hour === 0 ? 12 : hour;
-  return `${day} ${dayNum} de ${month} a las ${h12}:${minute} ${ampm}`;
+  const ampm   = h < 12 ? 'de la mañana' : h < 18 ? 'de la tarde' : 'de la noche';
+  const h12    = h % 12 === 0 ? 12 : h % 12;
+  const mStr   = m === 0 ? '' : `:${String(m).padStart(2,'0')}`;
+  return `${days[dayOfWeek]} ${dayNum} de ${months[month]} a las ${h12}${mStr} ${ampm}`;
 }
 
-// ── 2. CREAR CITA ───────────────────────────────────────────────
-async function createAppointment({ patient_name, patient_phone, appointment_datetime, reason, notes = '' }) {
-  try {
-    const calendar = getCalendar();
-    const startTime = new Date(appointment_datetime);
-    const endTime = new Date(startTime.getTime() + DURATION_MINUTES * 60 * 1000);
-
-    const event = {
-      summary: `${patient_name} — ${reason}`,
-      description: [
-        `👤 Paciente: ${patient_name}`,
-        `📞 Teléfono: ${patient_phone}`,
-        `🏥 Motivo: ${reason}`,
-        notes ? `📝 Notas: ${notes}` : '',
-        ``,
-        `✅ Agendado por Ana (Asistente Virtual)`,
-        `📅 ${new Date().toLocaleString('es-DO', { timeZone: TIMEZONE })}`,
-      ].filter(Boolean).join('\n'),
-      start: { dateTime: startTime.toISOString(), timeZone: TIMEZONE },
-      end: { dateTime: endTime.toISOString(), timeZone: TIMEZONE },
-      attendees: [],
-      reminders: {
-        useDefault: false,
-        overrides: [
-          { method: 'email', minutes: 24 * 60 },
-          { method: 'popup', minutes: 60 },
-        ],
-      },
-      extendedProperties: {
-        private: {
-          patient_phone,
-          patient_name,
-          outbound_confirmed: 'false',
-          created_by: 'ana_voice_agent',
-        },
-      },
-    };
-
-    const response = await calendar.events.insert({
-      calendarId: CALENDAR_ID,
-      resource: event,
-    });
-
-    logger.info('Cita creada', { patient: patient_name, datetime: appointment_datetime, eventId: response.data.id });
-
-    return {
-      success: true,
-      event_id: response.data.id,
-      formatted_datetime: formatDateTimeSpanish(startTime),
-      message: `Cita creada exitosamente para ${patient_name} el ${formatDateTimeSpanish(startTime)}`,
-    };
-  } catch (error) {
-    logger.error('Error creating appointment', { error: error.message });
-    return { success: false, error: 'No pude crear la cita. Intenta de nuevo.' };
-  }
+function formatSlotLabel(date) {
+  const days   = ['domingo','lunes','martes','miércoles','jueves','viernes','sábado'];
+  const months = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const local  = new Date(date.toLocaleString('en-US', { timeZone: TZ }));
+  const h      = local.getHours();
+  const m      = local.getMinutes();
+  const ampm   = h < 12 ? 'de la mañana' : h < 18 ? 'de la tarde' : 'de la noche';
+  const h12    = h % 12 === 0 ? 12 : h % 12;
+  const mStr   = m === 0 ? '' : `:${String(m).padStart(2,'0')}`;
+  return `${days[local.getDay()]} ${local.getDate()} de ${months[local.getMonth()]} a las ${h12}${mStr} ${ampm}`;
 }
 
-// ── 3. BUSCAR CITA ──────────────────────────────────────────────
-async function getAppointment({ patient_name, patient_phone }) {
-  try {
-    const calendar = getCalendar();
-    const now = new Date();
-    const futureLimit = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000); // 60 días
-
-    const response = await calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: now.toISOString(),
-      timeMax: futureLimit.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-      q: patient_name || patient_phone || '',
-    });
-
-    const events = response.data.items.filter(e => {
-      if (e.status === 'cancelled') return false;
-      const desc = (e.description || '').toLowerCase();
-      const title = (e.summary || '').toLowerCase();
-      const searchName = (patient_name || '').toLowerCase();
-      const searchPhone = (patient_phone || '').replace(/\D/g, '');
-      return (
-        (searchName && (title.includes(searchName) || desc.includes(searchName))) ||
-        (searchPhone && desc.includes(searchPhone))
-      );
-    });
-
-    if (events.length === 0) {
-      return {
-        success: true,
-        found: false,
-        message: 'No encontré citas registradas con esos datos.',
-        appointments: [],
-      };
-    }
-
-    return {
-      success: true,
-      found: true,
-      appointments: events.map(e => ({
-        event_id: e.id,
-        summary: e.summary,
-        datetime: e.start.dateTime,
-        formatted_datetime: formatDateTimeSpanish(new Date(e.start.dateTime)),
-        status: e.status,
-        phone: e.extendedProperties?.private?.patient_phone || '',
-      })),
-    };
-  } catch (error) {
-    logger.error('Error getting appointment', { error: error.message });
-    return { success: false, error: 'No pude buscar la cita.' };
-  }
+async function createAppointment({ patient_name, phone, reason, start_iso, end_iso }) {
+  const calendar = getCalendar();
+  const event = {
+    summary:     `🩺 ${patient_name} — ${reason}`,
+    description: `Paciente: ${patient_name}\nTeléfono: ${phone}\nMotivo: ${reason}\nAgendado por: Julia (Asistente Virtual)`,
+    start: { dateTime: start_iso, timeZone: TZ },
+    end:   { dateTime: end_iso,   timeZone: TZ },
+    reminders: { useDefault: false, overrides: [{ method: 'popup', minutes: 30 }, { method: 'email', minutes: 1440 }] },
+    extendedProperties: { private: { patient_phone: phone, patient_name, booked_by: 'julia_virtual_agent', status: 'pending_confirmation' } }
+  };
+  const res = await calendar.events.insert({ calendarId: CALENDAR_ID, resource: event });
+  return { success: true, event_id: res.data.id, label: formatSlotLabel(new Date(start_iso)), htmlLink: res.data.htmlLink };
 }
 
-// ── 4. ACTUALIZAR CITA ──────────────────────────────────────────
-async function updateAppointment({ event_id, new_datetime, status, notes }) {
-  try {
-    const calendar = getCalendar();
-
-    // Obtener el evento actual
-    const existing = await calendar.events.get({ calendarId: CALENDAR_ID, eventId: event_id });
-    const event = existing.data;
-
-    // Aplicar cambios
-    if (new_datetime) {
-      const startTime = new Date(new_datetime);
-      const endTime = new Date(startTime.getTime() + DURATION_MINUTES * 60 * 1000);
-      event.start = { dateTime: startTime.toISOString(), timeZone: TIMEZONE };
-      event.end = { dateTime: endTime.toISOString(), timeZone: TIMEZONE };
-    }
-
-    if (status) {
-      event.status = status;
-      const statusLabel = status === 'confirmed' ? '✅ CONFIRMADA' : status === 'cancelled' ? '❌ CANCELADA' : '⏳ TENTATIVA';
-      event.description = (event.description || '') + `\n\n${statusLabel} el ${new Date().toLocaleString('es-DO', { timeZone: TIMEZONE })} vía Ana (Asistente Virtual)`;
-
-      // Marcar como confirmada en propiedades
-      if (!event.extendedProperties) event.extendedProperties = { private: {} };
-      event.extendedProperties.private.outbound_confirmed = status === 'confirmed' ? 'true' : 'false';
-    }
-
-    if (notes) {
-      event.description = (event.description || '') + `\n📝 ${notes}`;
-    }
-
-    await calendar.events.update({
-      calendarId: CALENDAR_ID,
-      eventId: event_id,
-      resource: event,
-    });
-
-    const formattedNew = new_datetime ? formatDateTimeSpanish(new Date(new_datetime)) : null;
-    logger.info('Cita actualizada', { event_id, status, new_datetime });
-
-    return {
-      success: true,
-      message: new_datetime
-        ? `Cita reprogramada para ${formattedNew}`
-        : `Cita ${status === 'confirmed' ? 'confirmada' : 'actualizada'} correctamente`,
-      formatted_datetime: formattedNew,
-    };
-  } catch (error) {
-    logger.error('Error updating appointment', { error: error.message });
-    return { success: false, error: 'No pude actualizar la cita.' };
-  }
+async function getAppointment({ patient_name, phone }) {
+  const calendar = getCalendar();
+  const now = new Date();
+  const future = new Date(now);
+  future.setDate(future.getDate() + 30);
+  const res = await calendar.events.list({
+    calendarId: CALENDAR_ID, timeMin: now.toISOString(), timeMax: future.toISOString(),
+    singleEvents: true, orderBy: 'startTime', q: patient_name,
+  });
+  const events = (res.data.items || []).filter(e => {
+    const props = e.extendedProperties?.private || {};
+    return (e.summary || '').toLowerCase().includes(patient_name.toLowerCase()) || (phone && props.patient_phone === phone);
+  });
+  if (events.length === 0) return { found: false };
+  const ev = events[0];
+  return { found: true, event_id: ev.id, patient: ev.extendedProperties?.private?.patient_name || patient_name, start: ev.start.dateTime, end: ev.end.dateTime, label: formatSlotLabel(new Date(ev.start.dateTime)), status: ev.extendedProperties?.private?.status || 'unknown', reason: (ev.summary || '').replace(/^🩺\s*[^—]+—\s*/, '').trim() };
 }
 
-// ── 5. CANCELAR CITA ────────────────────────────────────────────
-async function cancelAppointment({ event_id, reason }) {
-  try {
-    const calendar = getCalendar();
-
-    // Obtener el evento y agregar nota de cancelación antes de eliminar
-    const existing = await calendar.events.get({ calendarId: CALENDAR_ID, eventId: event_id });
-    const event = existing.data;
-
-    event.status = 'cancelled';
-    event.description = (event.description || '') + `\n\n❌ CANCELADA el ${new Date().toLocaleString('es-DO', { timeZone: TIMEZONE })}${reason ? ` — Motivo: ${reason}` : ''} vía Ana (Asistente Virtual)`;
-
-    await calendar.events.update({
-      calendarId: CALENDAR_ID,
-      eventId: event_id,
-      resource: event,
-    });
-
-    logger.info('Cita cancelada', { event_id, reason });
-    return { success: true, message: 'Cita cancelada correctamente.' };
-  } catch (error) {
-    logger.error('Error cancelling appointment', { error: error.message });
-    return { success: false, error: 'No pude cancelar la cita.' };
-  }
+async function updateAppointment({ event_id, new_start_iso, new_end_iso, status = 'confirmed' }) {
+  const calendar = getCalendar();
+  const patch = { extendedProperties: { private: { status } } };
+  if (new_start_iso && new_end_iso) { patch.start = { dateTime: new_start_iso, timeZone: TZ }; patch.end = { dateTime: new_end_iso, timeZone: TZ }; }
+  await calendar.events.patch({ calendarId: CALENDAR_ID, eventId: event_id, resource: patch });
+  return { success: true, status, new_label: new_start_iso ? formatSlotLabel(new Date(new_start_iso)) : null };
 }
 
-// ── 6. OBTENER CITAS PENDIENTES DE CONFIRMAR (para outbound) ────
-async function getUnconfirmedAppointments(hoursAhead = 24) {
-  try {
-    const calendar = getCalendar();
-    const now = new Date();
-    const targetTime = new Date(now.getTime() + hoursAhead * 60 * 60 * 1000);
-    const windowEnd = new Date(targetTime.getTime() + 4 * 60 * 60 * 1000); // +4h ventana
-
-    const response = await calendar.events.list({
-      calendarId: CALENDAR_ID,
-      timeMin: targetTime.toISOString(),
-      timeMax: windowEnd.toISOString(),
-      singleEvents: true,
-      orderBy: 'startTime',
-    });
-
-    const unconfirmed = response.data.items.filter(e => {
-      if (e.status === 'cancelled') return false;
-      const confirmed = e.extendedProperties?.private?.outbound_confirmed;
-      const createdBy = e.extendedProperties?.private?.created_by;
-      return createdBy === 'ana_voice_agent' && confirmed !== 'true';
-    });
-
-    return unconfirmed.map(e => ({
-      event_id: e.id,
-      patient_name: e.extendedProperties?.private?.patient_name || e.summary,
-      patient_phone: e.extendedProperties?.private?.patient_phone || '',
-      datetime: e.start.dateTime,
-      formatted_datetime: formatDateTimeSpanish(new Date(e.start.dateTime)),
-      summary: e.summary,
-    }));
-  } catch (error) {
-    logger.error('Error getting unconfirmed appointments', { error: error.message });
-    return [];
-  }
+async function cancelAppointment({ event_id }) {
+  await getCalendar().events.delete({ calendarId: CALENDAR_ID, eventId: event_id });
+  return { success: true, cancelled: true };
 }
 
-module.exports = {
-  checkAvailability,
-  createAppointment,
-  getAppointment,
-  updateAppointment,
-  cancelAppointment,
-  getUnconfirmedAppointments,
-  formatDateTimeSpanish,
-};
+function formatDateTimeSpanish(date) { return formatSlotLabel(date); }
+
+module.exports = { checkAvailability, createAppointment, getAppointment, updateAppointment, cancelAppointment, formatDateTimeSpanish };

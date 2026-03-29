@@ -1,0 +1,32 @@
+{
+  "name": "ana-voice-agent",
+  "version": "1.0.0",
+  "description": "Ana - Secretaria Virtual IA | Consultorio Dr. García | Retell AI + Twilio + Google Calendar",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "setup": "node scripts/setup-retell-agent.js",
+    "test-call": "node scripts/test-outbound.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1",
+    "googleapis": "^128.0.0",
+    "axios": "^1.6.0",
+    "twilio": "^4.19.0",
+    "retell-sdk": "^3.0.0",
+    "node-cron": "^3.0.3",
+    "winston": "^3.11.0",
+    "express-validator": "^7.0.1",
+    "helmet": "^7.1.0",
+    "cors": "^2.8.5",
+    "crypto": "^1.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

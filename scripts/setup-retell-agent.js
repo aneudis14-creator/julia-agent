@@ -24,7 +24,7 @@ async function createOrUpdateAgent() {
   console.log('📝 Paso 1: Creando LLM...');
 
   const llmPayload = {
-    model: 'claude-3-5-sonnet',        // Mejor para voz en español
+    model: 'claude-4.5-sonnet',        // Mejor para voz en español
     system_prompt: SYSTEM_PROMPT,
     tools: RETELL_TOOLS,
     general_tools: [
@@ -59,9 +59,9 @@ async function createOrUpdateAgent() {
   console.log('\n📝 Paso 2: Creando agente de voz...');
 
   const agentPayload = {
-    llm_websocket_url: `wss://api.retellai.com/retell-llm/llm-websocket/${llmId}`,
+    response_engine: { type: "retell-llm", llm_id: llmId },
     agent_name: 'Julia — Secretaria Consultorio Dr. García',
-    voice_id: 'es-DO-EmilioNeural',       // Voz dominicana disponible en Retell
+    voice_id: 'cartesia-Hailey-Spanish-latin-america',       // Voz dominicana disponible en Retell
     voice_speed: 1.0,
     voice_temperature: 0.7,
     responsiveness: 0.9,                   // Qué tan rápido responde

@@ -196,6 +196,10 @@ app.get('/setup/agent-config', (_req, res) => res.json({
   system_prompt: buildSystemPrompt(), short_prompt: buildShortPrompt(), tools: ALL_TOOLS,
 }));
 
+// WHATSAPP
+const whatsappRouter = require('./routes/whatsapp');
+app.use('/whatsapp', whatsappRouter);
+
 // ARRANCAR — pre-cargar agenda antes de aceptar llamadas
 app.listen(PORT, async () => {
   console.log(`\n╔══════════════════════════════════════════╗\n║   🤖 JULIA AGENT BACKEND — Iniciando     ║\n╚══════════════════════════════════════════╝`);

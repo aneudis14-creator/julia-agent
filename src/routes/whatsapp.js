@@ -61,7 +61,8 @@ async function sendWA(to, body) {
   await axios.post(
     `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
     new URLSearchParams({
-      From: `whatsapp:${process.env.TWILIO_PHONE_NUMBER}`,
+      From: `whatsapp:${process.env.TWILIO_WHATSAPP_NUMBER ||
+      process.env.TWILIO_PHONE_NUMBER}`,
       To: `whatsapp:${to}`,
       Body: body
     }),

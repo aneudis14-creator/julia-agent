@@ -117,6 +117,22 @@ async function sendWA(to, body, fromNumber) {
   );
 }
 
+
+// ── VERIFICACIÓN WEBHOOK META ─────────────────────────────────
+router.get('/webhook', (req, res) => {
+  const mode      = req.query['hub.mode'];
+  const token     = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === 'julia2026') {
+    console.log('✅ Webhook de Meta verificado');
+    res.status(200).send(challenge);
+  } else {
+    console.log('❌ Token de verificación incorrecto');
+    res.sendStatus(403);
+  }
+});
+
 // ── WEBHOOK PRINCIPAL ─────────────────────────────────────────
 router.post('/webhook', async (req, res) => {
   res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');

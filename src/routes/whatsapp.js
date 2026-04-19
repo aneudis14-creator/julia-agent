@@ -1,20 +1,13 @@
-// ══════════════════════════════════════════════════════════════
-//  whatsapp.js — Julia Multi-Doctor
-//  Detecta qué doctor según el número que recibe el mensaje
-//  Soporta texto, notas de voz e imágenes
-// ══════════════════════════════════════════════════════════════
-
 const express  = require('express');
 const router   = express.Router();
 const axios    = require('axios');
 const FormData = require('form-data');
 const { getDoctorByNumber, buildSystemPrompt } = require('./doctors');
 
-// Historial por número de teléfono
 const conversations = new Map();
 const MAX_HISTORY   = 10;
 
-// ── GROQ: RESPUESTA DE TEXTO ──────────────────────────────────
+// ── GROQ: TEXTO ───────────────────────────────────────────────
 async function askGroq(history, doctor) {
   const res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
     model: 'llama-3.3-70b-versatile',
@@ -33,12 +26,12 @@ async function askGroq(history, doctor) {
   return res.data.choices[0].message.content;
 }
 
-// ── GROQ WHISPER: TRANSCRIPCIÓN DE AUDIO ─────────────────────
-async function transcribeAudio(mediaUrl) {
+// ── GROQ WHISPER: AUDIO ───────────────────────────────────────
+async function transcribeAudio(mediaUrl, token) {
   try {
     const audioRes = await axios.get(mediaUrl, {
       responseType: 'arraybuffer',
-      auth: { username: process.env.TWILIO_ACCOUNT_SID, password: process.env.TWILIO_AUTH_TOKEN }
+      headers: { 'Authorization': `Bearer ${token}` }
     });
 
     const formData = new FormData();
@@ -57,13 +50,13 @@ async function transcribeAudio(mediaUrl) {
   }
 }
 
-// ── ANÁLISIS DE IMAGEN ────────────────────────────────────────
-async function analyzeImage(mediaUrl, caption, doctor) {
+// ── ANALIZAR IMAGEN ───────────────────────────────────────────
+async function analyzeImage(mediaUrl, caption, doctor, token) {
   try {
     if (process.env.ANTHROPIC_API_KEY) {
       const imgRes = await axios.get(mediaUrl, {
         responseType: 'arraybuffer',
-        auth: { username: process.env.TWILIO_ACCOUNT_SID, password: process.env.TWILIO_AUTH_TOKEN }
+        headers: { 'Authorization': `Bearer ${token}` }
       });
       const base64 = Buffer.from(imgRes.data).toString('base64');
 
@@ -74,7 +67,7 @@ async function analyzeImage(mediaUrl, caption, doctor) {
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: base64 } },
-            { type: 'text', text: `Eres Julia, asistente del ${doctor.nombre}. El paciente envió esta imagen${caption ? ` con el mensaje: "${caption}"` : ''}. Si es receta médica, explica brevemente los medicamentos. Si es estudio médico o placa, describe sin dar diagnóstico. Responde en español dominicano, máximo 3 oraciones, sin diagnósticos.` }
+            { type: 'text', text: `Eres Julia, asistente del ${doctor.nombre}. El paciente envió esta imagen${caption ? ` con el mensaje: "${caption}"` : ''}. Si es receta médica, explica brevemente los medicamentos. Si es estudio médico, describe sin dar diagnóstico. Responde en español dominicano, máximo 3 oraciones.` }
           ]
         }]
       }, {
@@ -82,41 +75,62 @@ async function analyzeImage(mediaUrl, caption, doctor) {
       });
       return res.data.content[0].text;
     }
-
-    // Sin API de visión — respuesta genérica inteligente
-    return `Recibí su imagen${caption ? ` con el mensaje "${caption}"` : ''}. Para que el ${doctor.nombre} pueda revisarla adecuadamente, le recomiendo traerla a la consulta o enviarla${doctor.whatsapp_directo ? ' al ' + doctor.whatsapp_directo : ' directamente al consultorio'}. ¿Le ayudo a coordinar su cita?`;
-
+    return `Recibí su imagen${caption ? ` con el mensaje "${caption}"` : ''}. Para que el ${doctor.nombre} pueda revisarla, le recomiendo traerla a la consulta${doctor.whatsapp_directo ? ' o enviarla al ' + doctor.whatsapp_directo : ''}.`;
   } catch (err) {
     console.error('Error analizando imagen:', err.message);
-    return `Recibí su imagen pero tuve un inconveniente al procesarla. Por favor tráigala a la consulta o comuníquese${doctor.whatsapp_directo ? ' al ' + doctor.whatsapp_directo : ' con el consultorio'}.`;
+    return `Recibí su imagen pero tuve un problema al procesarla. Por favor comuníquese${doctor.whatsapp_directo ? ' al ' + doctor.whatsapp_directo : ' con el consultorio'}.`;
   }
 }
 
-// ── DETECTAR EMERGENCIA ───────────────────────────────────────
-function isEmergency(text, doctor) {
-  const general = ['emergencia','accidente','no respira','convulsión','sangrado severo','no puedo mover'];
-  const ortopeda = ['fractura','trauma','caída','golpe fuerte','hueso roto'];
-  const cirugia  = ['dolor abdominal severo','fiebre después de cirugía','infección herida','complicación quirúrgica'];
+// ── ENVIAR MENSAJE POR META API ───────────────────────────────
+async function sendMetaWA(to, body, phoneId, token) {
+  try {
+    await axios.post(
+      `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: to.replace('+', '').replace(/\D/g, ''),
+        type: 'text',
+        text: { body }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+  } catch (err) {
+    console.error('Error enviando mensaje Meta:', err.response?.data || err.message);
+  }
+}
 
+// ── OBTENER CREDENCIALES DEL DOCTOR ──────────────────────────
+function getDoctorCreds(doctorKey) {
+  const creds = {
+    alcantara: {
+      token:   process.env.META_TOKEN_ALCANTARA,
+      phoneId: process.env.META_PHONE_ID_ALCANTARA,
+    },
+    batista: {
+      token:   process.env.META_TOKEN_BATISTA,
+      phoneId: process.env.META_PHONE_ID_BATISTA,
+    }
+  };
+  return creds[doctorKey] || creds.alcantara;
+}
+
+// ── EMERGENCIA ────────────────────────────────────────────────
+function isEmergency(text, doctor) {
+  const general  = ['emergencia','accidente','no respira','convulsión','sangrado severo'];
+  const ortopeda = ['fractura','trauma','caída','golpe fuerte','hueso roto'];
+  const cirugia  = ['dolor abdominal severo','fiebre después de cirugía','infección herida'];
   const words = [...general,
-    ...(doctor.especialidad.toLowerCase().includes('ortopeda') ? ortopeda : []),
-    ...(doctor.especialidad.toLowerCase().includes('ciruj') ? cirugia : [])
+    ...(doctor.especialidad?.toLowerCase().includes('ortopeda') ? ortopeda : []),
+    ...(doctor.especialidad?.toLowerCase().includes('ciruj') ? cirugia : [])
   ];
   return words.some(w => (text||'').toLowerCase().includes(w));
 }
-
-// ── ENVIAR WHATSAPP ───────────────────────────────────────────
-async function sendWA(to, body, fromNumber) {
-  await axios.post(
-    `https://api.twilio.com/2010-04-01/Accounts/${process.env.TWILIO_ACCOUNT_SID}/Messages.json`,
-    new URLSearchParams({ From: `whatsapp:${fromNumber}`, To: `whatsapp:${to}`, Body: body }),
-    {
-      auth: { username: process.env.TWILIO_ACCOUNT_SID, password: process.env.TWILIO_AUTH_TOKEN },
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
-    }
-  );
-}
-
 
 // ── VERIFICACIÓN WEBHOOK META ─────────────────────────────────
 router.get('/webhook', (req, res) => {
@@ -125,64 +139,78 @@ router.get('/webhook', (req, res) => {
   const challenge = req.query['hub.challenge'];
 
   if (mode === 'subscribe' && token === 'julia2026') {
-    console.log('✅ Webhook de Meta verificado');
+    console.log('✅ Webhook Meta verificado');
     res.status(200).send(challenge);
   } else {
-    console.log('❌ Token de verificación incorrecto');
+    console.log('❌ Token incorrecto');
     res.sendStatus(403);
   }
 });
 
-// ── WEBHOOK PRINCIPAL ─────────────────────────────────────────
+// ── WEBHOOK PRINCIPAL META ────────────────────────────────────
 router.post('/webhook', async (req, res) => {
-  res.status(200).send('<?xml version="1.0" encoding="UTF-8"?><Response></Response>');
+  res.sendStatus(200);
 
   try {
-    const { From, To, Body, MediaUrl0, MediaContentType0, NumMedia } = req.body;
-    if (!From) return;
+    const body = req.body;
+    if (!body.object) return;
 
-    const phone      = From.replace('whatsapp:', '');
-    const toNumber   = (To || '').replace('whatsapp:', '');
-    const msgText    = (Body || '').trim();
-    const hasMedia   = parseInt(NumMedia || 0) > 0;
-    const isAudio    = hasMedia && MediaContentType0 && MediaContentType0.includes('audio');
-    const isImage    = hasMedia && MediaContentType0 && MediaContentType0.includes('image');
+    const entry   = body.entry?.[0];
+    const change  = entry?.changes?.[0];
+    const value   = change?.value;
+    const message = value?.messages?.[0];
 
-    // Detectar qué doctor corresponde a este número
-    const doctor     = getDoctorByNumber(toNumber);
-    const fromNumber = toNumber || process.env.TWILIO_WHATSAPP_NUMBER;
+    if (!message) return;
 
-    console.log(`📱 WhatsApp → ${doctor.nombre} | [${phone}]: ${msgText} | Audio:${isAudio} | Imagen:${isImage}`);
+    const phone     = message.from;
+    const msgType   = message.type;
+    const msgText   = message.text?.body || '';
+    const phoneId   = value?.metadata?.phone_number_id;
 
-    // Historial por combinación doctor+paciente
-    const convKey = `${doctor.key}_${phone}`;
+    // Detectar qué doctor corresponde a este phoneId
+    let doctorKey = 'alcantara';
+    if (phoneId === process.env.META_PHONE_ID_BATISTA) doctorKey = 'batista';
+
+    const { getDoctorByKey } = require('./doctors');
+    const doctor = getDoctorByKey ? getDoctorByKey(doctorKey) : { key: doctorKey, nombre: 'Dr. Alcántara', especialidad: 'Medicina General', whatsapp_directo: '809-980-7096', emergencias: '809-980-7096', clinicas: [{ nombre: 'Centro Médico Corominas Pepín', dias: 'Lunes y Miércoles', horario: '8:00 AM - 12:30 PM' }], precios: { general: 'RD$3,000', control: 'RD$1,500', pago: 'Efectivo y transferencia' }, seguros: 'ARS Humano, SEMMA, Universal', servicios: 'Ortopedia, Traumatología', no_trabaja: 'Sábados y domingos', preparacion: 'Traer cédula y carnet de seguro', info_agendar: 'Nombre, teléfono, motivo', recordatorio: '2 horas antes', restricciones: 'No dar diagnósticos', sintomas_alerta: 'Trauma severo, fractura' };
+
+    const creds = getDoctorCreds(doctorKey);
+    const { token, phoneId: pid } = creds;
+
+    console.log(`📱 Meta WhatsApp [${phone}] → ${doctor.nombre} | Tipo: ${msgType}`);
+
+    const convKey = `${doctorKey}_${phone}`;
     if (!conversations.has(convKey)) conversations.set(convKey, []);
     const history = conversations.get(convKey);
 
     let reply;
 
     // ── NOTA DE VOZ ──────────────────────────────────────────
-    if (isAudio) {
-      await sendWA(phone, 'Un momentico, estoy escuchando tu nota de voz... 🎙️', fromNumber);
-      const transcripcion = await transcribeAudio(MediaUrl0);
+    if (msgType === 'audio') {
+      const mediaId  = message.audio?.id;
+      const mediaUrl = `https://graph.facebook.com/v20.0/${mediaId}`;
+      await sendMetaWA(phone, 'Un momentico, estoy escuchando tu nota de voz... 🎙️', pid, token);
+      const transcripcion = await transcribeAudio(mediaUrl, token);
       if (transcripcion) {
-        console.log(`📝 Voz transcrita: ${transcripcion}`);
         history.push({ role: 'user', content: `[Nota de voz]: ${transcripcion}` });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         reply = await askGroq(history, doctor);
       } else {
-        reply = `Disculpe, no pude escuchar bien su nota de voz. ¿Puede escribirme su consulta?${doctor.whatsapp_directo ? ' También puede llamar al ' + doctor.whatsapp_directo : ''}`;
+        reply = `Disculpe, no pude escuchar bien su nota de voz. ¿Puede escribirme su consulta?`;
       }
 
     // ── IMAGEN ───────────────────────────────────────────────
-    } else if (isImage) {
-      await sendWA(phone, 'Un momentico, estoy revisando la imagen... 🔍', fromNumber);
-      reply = await analyzeImage(MediaUrl0, msgText, doctor);
-      history.push({ role: 'user', content: `[Imagen]${msgText ? ': ' + msgText : ''}` });
+    } else if (msgType === 'image') {
+      const mediaId  = message.image?.id;
+      const caption  = message.image?.caption || '';
+      const mediaUrl = `https://graph.facebook.com/v20.0/${mediaId}`;
+      await sendMetaWA(phone, 'Un momentico, estoy revisando la imagen... 🔍', pid, token);
+      reply = await analyzeImage(mediaUrl, caption, doctor, token);
+      history.push({ role: 'user', content: `[Imagen]${caption ? ': ' + caption : ''}` });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
-    // ── TEXTO NORMAL ─────────────────────────────────────────
-    } else {
+    // ── TEXTO ────────────────────────────────────────────────
+    } else if (msgType === 'text') {
       if (isEmergency(msgText, doctor)) {
         const emergNum = doctor.emergencias || doctor.whatsapp_directo;
         reply = `Esto requiere atención inmediata. Por favor diríjase a ${doctor.hospital_referencia || doctor.clinicas[0]?.nombre} de urgencia${emergNum ? ' o llame al ' + emergNum : ''}.`;
@@ -191,27 +219,27 @@ router.post('/webhook', async (req, res) => {
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         reply = await askGroq(history, doctor);
       }
+    } else {
+      reply = `Recibí su mensaje. ¿En qué le puedo ayudar?`;
     }
 
-    history.push({ role: 'assistant', content: reply });
-    await sendWA(phone, reply, fromNumber);
-    console.log(`✅ Julia (${doctor.nombre}) respondió a ${phone}`);
+    if (reply) {
+      history.push({ role: 'assistant', content: reply });
+      await sendMetaWA(phone, reply, pid, token);
+      console.log(`✅ Julia (${doctor.nombre}) respondió a ${phone}`);
+    }
 
   } catch (err) {
-    console.error('WhatsApp error:', err.message);
-    try {
-      const phone = req.body?.From?.replace('whatsapp:', '');
-      const toNum = req.body?.To?.replace('whatsapp:', '') || process.env.TWILIO_WHATSAPP_NUMBER;
-      if (phone) await sendWA(phone, 'Disculpe, tuve un inconveniente técnico. Por favor intente nuevamente o contacte el consultorio directamente.', toNum);
-    } catch(e) {}
+    console.error('WhatsApp Meta error:', err.message);
   }
 });
 
 // ── STATUS ────────────────────────────────────────────────────
 router.get('/status', (req, res) => res.json({
   status: 'active',
+  api: 'Meta WhatsApp Cloud API',
   ai: 'Groq llama-3.3-70b + Whisper + Vision',
-  doctors: ['Dr. Angel Alcántara (Ortopeda)', 'Dr. Edwin Batista (Cirujano General)'],
+  doctors: ['Dr. Angel Alcántara', 'Dr. Edwin Batista'],
   active_conversations: conversations.size,
 }));
 

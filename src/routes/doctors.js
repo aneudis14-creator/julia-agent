@@ -178,4 +178,10 @@ RESTRICCIONES: ${doctor.restricciones}
 Texto plano, sin markdown. Máximo 3 oraciones.`;
 }
 
-module.exports = { DOCTORS, getDoctorByNumber, buildSystemPrompt };
+function getDoctorByKey(key) {
+  const doctor = DOCTORS[key];
+  if (!doctor) return { key: 'alcantara', ...DOCTORS.alcantara };
+  return { key, ...doctor };
+}
+
+module.exports = { DOCTORS, getDoctorByNumber, getDoctorByKey, buildSystemPrompt };

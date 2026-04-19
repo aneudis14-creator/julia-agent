@@ -132,6 +132,135 @@ function isEmergency(text, doctor) {
   return words.some(w => (text||'').toLowerCase().includes(w));
 }
 
+
+// ── ALERTA AL DOCTOR CUANDO HAY CITA NUEVA ───────────────────
+async function alertDoctor(doctor, patientName, phone, reason, pid, token) {
+  try {
+    const doctorPhone = doctor.whatsapp_directo || doctor.emergencias;
+    if (!doctorPhone) return;
+
+    const hora = new Date().toLocaleString('es-DO', {
+      timeZone: 'America/Santo_Domingo',
+      hour: '2-digit', minute: '2-digit', hour12: true,
+      weekday: 'long', day: 'numeric', month: 'long'
+    });
+
+    const msg = `📋 *Nueva cita agendada por Julia*
+
+👤 Paciente: ${patientName}
+📞 Teléfono: ${phone}
+🩺 Motivo: ${reason || 'No especificado'}
+🕐 Agendada: ${hora}
+
+_Responda este mensaje si necesita contactar al paciente._`;
+
+    // Enviar al número personal del doctor
+    const cleanPhone = doctorPhone.replace(/\D/g, '');
+    await axios.post(
+      \`https://graph.facebook.com/v20.0/\${pid}/messages\`,
+      {
+        messaging_product: 'whatsapp',
+        to: cleanPhone,
+        type: 'text',
+        text: { body: msg }
+      },
+      { headers: { 'Authorization': \`Bearer \${token}\`, 'Content-Type': 'application/json' } }
+    );
+    console.log(\`🔔 Alerta enviada al doctor \${doctor.nombre}\`);
+  } catch (err) {
+    console.error('Error enviando alerta al doctor:', err.message);
+  }
+}
+
+// Detectar si Julia confirmó una cita en su respuesta
+function citaConfirmada(reply) {
+  const keywords = ['cita confirmada', 'cita agendada', 'quedó agendada', 'quedó registrada',
+    'le esperamos', 'anotado', 'registrado', 'confirmo su cita', 'su cita ha sido'];
+  return keywords.some(k => reply.toLowerCase().includes(k));
+}
+
+// Extraer datos del historial cuando se confirma cita
+function extractAppointmentData(history) {
+  const fullText = history.map(h => h.content).join(' ').toLowerCase();
+  
+  // Buscar nombre (patrón común en conversación)
+  let patientName = 'No especificado';
+  let reason = 'Consulta general';
+  
+  const nameMatch = history.find(h => h.role === 'user' && h.content.length > 3 && h.content.length < 50);
+  if (nameMatch) patientName = nameMatch.content;
+  
+  if (fullText.includes('rodilla')) reason = 'Dolor de rodilla';
+  else if (fullText.includes('espalda')) reason = 'Dolor de espalda';
+  else if (fullText.includes('hombro')) reason = 'Dolor de hombro';
+  else if (fullText.includes('fractura')) reason = 'Fractura';
+  else if (fullText.includes('cirugía')) reason = 'Consulta pre-quirúrgica';
+  else if (fullText.includes('control')) reason = 'Consulta de control';
+  
+  return { patientName, reason };
+}
+
+
+// ── TEXTO A VOZ (Julia responde con audio) ────────────────────
+async function textToSpeech(text) {
+  try {
+    if (!process.env.ELEVENLABS_API_KEY) return null;
+    
+    const res = await axios.post(
+      'https://api.elevenlabs.io/v1/text-to-speech/21m00Tcm4TlvDq8ikWAM',
+      {
+        text: text.substring(0, 500), // máximo 500 chars
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: { stability: 0.5, similarity_boost: 0.75 }
+      },
+      {
+        headers: {
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json',
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+    return Buffer.from(res.data);
+  } catch(err) {
+    console.error('Error TTS:', err.message);
+    return null;
+  }
+}
+
+// Enviar audio por WhatsApp Meta
+async function sendAudioWA(to, audioBuffer, pid, token) {
+  try {
+    // Subir audio a Meta
+    const formData = new FormData();
+    formData.append('file', audioBuffer, { filename: 'julia_response.mp3', contentType: 'audio/mpeg' });
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('type', 'audio/mpeg');
+
+    const uploadRes = await axios.post(
+      `https://graph.facebook.com/v20.0/${pid}/media`,
+      formData,
+      { headers: { 'Authorization': `Bearer ${token}`, ...formData.getHeaders() } }
+    );
+
+    const mediaId = uploadRes.data.id;
+
+    // Enviar el audio
+    await axios.post(
+      `https://graph.facebook.com/v20.0/${pid}/messages`,
+      {
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'audio',
+        audio: { id: mediaId }
+      },
+      { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+    );
+  } catch(err) {
+    console.error('Error enviando audio:', err.message);
+  }
+}
+
 // ── VERIFICACIÓN WEBHOOK META ─────────────────────────────────
 router.get('/webhook', (req, res) => {
   const mode      = req.query['hub.mode'];
@@ -187,16 +316,52 @@ router.post('/webhook', async (req, res) => {
 
     // ── NOTA DE VOZ ──────────────────────────────────────────
     if (msgType === 'audio') {
-      const mediaId  = message.audio?.id;
-      const mediaUrl = `https://graph.facebook.com/v20.0/${mediaId}`;
+      const mediaId = message.audio?.id;
       await sendMetaWA(phone, 'Un momentico, estoy escuchando tu nota de voz... 🎙️', pid, token);
-      const transcripcion = await transcribeAudio(mediaUrl, token);
-      if (transcripcion) {
-        history.push({ role: 'user', content: `[Nota de voz]: ${transcripcion}` });
-        if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askGroq(history, doctor);
-      } else {
-        reply = `Disculpe, no pude escuchar bien su nota de voz. ¿Puede escribirme su consulta?`;
+      
+      try {
+        // Paso 1: Obtener URL real del audio desde Meta
+        const mediaInfoRes = await axios.get(
+          `https://graph.facebook.com/v20.0/${mediaId}`,
+          { headers: { 'Authorization': `Bearer ${token}` } }
+        );
+        const mediaUrl = mediaInfoRes.data.url;
+
+        // Paso 2: Descargar el audio
+        const audioRes = await axios.get(mediaUrl, {
+          responseType: 'arraybuffer',
+          headers: { 'Authorization': `Bearer ${token}` }
+        });
+
+        // Paso 3: Transcribir con Groq Whisper
+        const formData = new FormData();
+        formData.append('file', Buffer.from(audioRes.data), { 
+          filename: 'audio.ogg', 
+          contentType: 'audio/ogg' 
+        });
+        formData.append('model', 'whisper-large-v3');
+        formData.append('language', 'es');
+        formData.append('response_format', 'text');
+
+        const transcRes = await axios.post(
+          'https://api.groq.com/openai/v1/audio/transcriptions',
+          formData,
+          { headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}`, ...formData.getHeaders() } }
+        );
+
+        const transcripcion = typeof transcRes.data === 'string' ? transcRes.data : transcRes.data.text;
+        
+        if (transcripcion && transcripcion.trim()) {
+          console.log(`📝 Voz transcrita: ${transcripcion}`);
+          history.push({ role: 'user', content: `[Nota de voz]: ${transcripcion}` });
+          if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+          reply = await askGroq(history, doctor);
+        } else {
+          reply = `Disculpe, no pude escuchar bien su nota de voz. ¿Puede escribirme su consulta?`;
+        }
+      } catch(audioErr) {
+        console.error('Error procesando audio:', audioErr.message);
+        reply = `Disculpe, tuve un problema al procesar su nota de voz. ¿Puede escribirme su consulta?`;
       }
 
     // ── IMAGEN ───────────────────────────────────────────────
@@ -225,8 +390,23 @@ router.post('/webhook', async (req, res) => {
 
     if (reply) {
       history.push({ role: 'assistant', content: reply });
+      
+      // Enviar respuesta de texto siempre
       await sendMetaWA(phone, reply, pid, token);
+      
+      // Si el paciente envió nota de voz, Julia también responde con audio
+      if (msgType === 'audio' && process.env.ELEVENLABS_API_KEY) {
+        const audioBuffer = await textToSpeech(reply);
+        if (audioBuffer) await sendAudioWA(phone, audioBuffer, pid, token);
+      }
+      
       console.log(`✅ Julia (${doctor.nombre}) respondió a ${phone}`);
+      
+      // Si Julia confirmó una cita, alertar al doctor
+      if (citaConfirmada(reply)) {
+        const { patientName, reason } = extractAppointmentData(history);
+        await alertDoctor(doctor, patientName, phone, reason, pid, token);
+      }
     }
 
   } catch (err) {

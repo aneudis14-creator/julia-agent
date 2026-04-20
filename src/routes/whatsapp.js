@@ -111,32 +111,20 @@ function buildPrompt(doctor) {
     'Responde siempre como una persona real. Natural. Breve. Humano.';
 }
 
-async function askGroq(history, doctor, retries) {
-  retries = retries || 0;
-  try {
-    var res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-      model: 'llama-3.3-70b-versatile',
-      max_tokens: 400,
-      temperature: 0.7,
-      messages: [{ role: 'system', content: buildPrompt(doctor) }].concat(history),
-    }, {
-      headers: {
-        'Authorization': 'Bearer ' + process.env.GROQ_API_KEY,
-        'Content-Type': 'application/json',
-      }
-    });
-    return res.data.choices[0].message.content;
-  } catch(err) {
-    var status = err.response && err.response.status;
-    if (status === 429 && retries < 3) {
-      // Rate limit - esperar y reintentar
-      var wait = (retries + 1) * 3000; // 3s, 6s, 9s
-      console.log('Groq rate limit 429 - reintentando en ' + (wait/1000) + 's (intento ' + (retries+1) + ')');
-      await new Promise(function(r) { setTimeout(r, wait); });
-      return askGroq(history, doctor, retries + 1);
+async function askClaude(history, doctor) {
+  var res = await axios.post('https://api.anthropic.com/v1/messages', {
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 400,
+    system: buildPrompt(doctor),
+    messages: history,
+  }, {
+    headers: {
+      'x-api-key': process.env.ANTHROPIC_API_KEY,
+      'anthropic-version': '2023-06-01',
+      'Content-Type': 'application/json',
     }
-    throw err;
-  }
+  });
+  return res.data.content[0].text;
 }
 
 async function transcribeAudio(mediaId, token) {
@@ -308,7 +296,7 @@ router.post('/webhook', async function(req, res) {
         console.log('Voz transcrita: ' + transcripcion);
         history.push({ role: 'user', content: '[Nota de voz]: ' + transcripcion });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askGroq(history, doctor);
+        reply = await askClaude(history, doctor);
       } else {
         reply = 'Disculpe, no pude escuchar bien su nota de voz. Puede escribirme su consulta.';
       }
@@ -318,7 +306,7 @@ router.post('/webhook', async function(req, res) {
       var caption = (message.image && message.image.caption) || '';
       history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-      reply = await askGroq(history, doctor);
+      reply = await askClaude(history, doctor);
 
     } else if (msgType === 'text') {
       if (isEmergency(msgText, doctor)) {
@@ -326,7 +314,7 @@ router.post('/webhook', async function(req, res) {
       } else {
         history.push({ role: 'user', content: msgText || 'Hola' });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askGroq(history, doctor);
+        reply = await askClaude(history, doctor);
       }
     } else {
       reply = 'Recibí su mensaje. En que le puedo ayudar?';

@@ -53,6 +53,55 @@ const DOCTORS = {
     sintomas_alerta: 'Cualquier síntoma que le preocupe, que le altere o que no sea como le explicó el doctor.',
   },
 
+  // ── QUIROPEDIA RD ─────────────────────────────────────────
+  quiropedia: {
+    whatsapp_number: process.env.WA_QUIROPEDIA || null,
+    nombre: 'Quiropedia RD',
+    especialidad: 'Quiropodología — Salud de los pies',
+    telefono: '809-425-2314',
+    whatsapp_directo: '809-425-2314',
+    emergencias: '809-425-2314',
+    email: 'quiropediard@gmail.com',
+    redes: '@quiropediard',
+    tono: 'cercano',
+    tiene_secretaria: true,
+    tel_humano: '809-425-2314',
+    clinicas: [
+      {
+        nombre: 'Quiropedia RD',
+        direccion: 'Plaza La Marquesa I, Local 81, 2do piso, Ciudad Juan Bosch, Santo Domingo Este',
+        referencia: 'Arriba de Farmacia Carol',
+        dias: 'Lunes a Sábado',
+        horario: '9:00 AM – 5:30 PM',
+        sistema: 'Con cita previa',
+        parking: false,
+      }
+    ],
+    precios: {
+      evaluacion: 'RD$500',
+      pedicure_clinico: 'RD$2,000',
+      quiropedia_basica: 'RD$3,700',
+      quiropedia_avanzada: 'RD$4,700',
+      eliminacion_callos: 'RD$1,000',
+      pago: 'Efectivo, tarjeta débito/crédito, transferencia',
+    },
+    seguros: 'No acepta seguros — solo pago directo',
+    servicios: 'Evaluación inicial, Pedicure clínico, Eliminación de callos, Verruga plantar, Tiña pedis, Quiropedia básica y avanzada, Extracción de laterales, Pedicure antifúngico, Fresado, Manicura, Pintura en gel, Retiro de gel y acrílico',
+    no_trabaja: 'Domingos y días feriados',
+    preparacion: 'Llegar puntual. No se requiere preparación especial. Traer calzado cómodo.',
+    info_agendar: 'Nombre completo, servicio que desea y día y hora preferida.',
+    recordatorio: 'Día anterior y 2 horas antes',
+    hospital_referencia: 'Quiropedia RD — Plaza La Marquesa I',
+    cirugias: null,
+    teleconsulta: false,
+    restricciones: 'Julia NO da diagnósticos médicos. No dar descuentos sin autorización. Siempre remite al especialista para evaluación.',
+    sintomas_alerta: 'herida infectada,pie diabético con herida,sangrado severo,infección grave',
+    extras: 'WiFi, café y té gratis para todos los pacientes',
+    promociones: 'Martes y jueves: pedicura en gel GRATIS. 10% descuento para clientes nuevos.',
+    ventas: true,
+    objeciones_max: 3,
+  },
+
   // ── DR. EDWIN BATISTA ──────────────────────────────────────
   batista: {
     whatsapp_number: process.env.WA_BATISTA || null,
@@ -178,6 +227,7 @@ RESTRICCIONES: ${doctor.restricciones}
 Texto plano, sin markdown. Máximo 3 oraciones.`;
 }
 
+// getDoctorByKey already handles any key via DOCTORS object
 function getDoctorByKey(key) {
   const doctor = DOCTORS[key];
   if (!doctor) return { key: 'alcantara', ...DOCTORS.alcantara };

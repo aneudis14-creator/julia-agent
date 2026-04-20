@@ -5,6 +5,11 @@ const FormData = require('form-data');
 
 const conversations = new Map();
 const MAX_HISTORY   = 10;
+const lastActivity  = new Map(); // timestamp ultimo mensaje por conversacion
+const timeoutChecks = new Map(); // timers activos por conversacion
+
+const TIMEOUT_WARN  = 5 * 60 * 1000;  // 5 minutos -> pregunta si sigue ahi
+const TIMEOUT_CLOSE = 10 * 60 * 1000; // 10 minutos -> cierra sesion
 
 function getDoctorByPhoneId(phoneId) {
   if (phoneId === process.env.META_PHONE_ID_BATISTA) {
@@ -106,19 +111,32 @@ function buildPrompt(doctor) {
     'Responde siempre como una persona real. Natural. Breve. Humano.';
 }
 
-async function askGroq(history, doctor) {
-  var res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
-    model: 'llama-3.3-70b-versatile',
-    max_tokens: 400,
-    temperature: 0.7,
-    messages: [{ role: 'system', content: buildPrompt(doctor) }].concat(history),
-  }, {
-    headers: {
-      'Authorization': 'Bearer ' + process.env.GROQ_API_KEY,
-      'Content-Type': 'application/json',
+async function askGroq(history, doctor, retries) {
+  retries = retries || 0;
+  try {
+    var res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'llama-3.3-70b-versatile',
+      max_tokens: 400,
+      temperature: 0.7,
+      messages: [{ role: 'system', content: buildPrompt(doctor) }].concat(history),
+    }, {
+      headers: {
+        'Authorization': 'Bearer ' + process.env.GROQ_API_KEY,
+        'Content-Type': 'application/json',
+      }
+    });
+    return res.data.choices[0].message.content;
+  } catch(err) {
+    var status = err.response && err.response.status;
+    if (status === 429 && retries < 3) {
+      // Rate limit - esperar y reintentar
+      var wait = (retries + 1) * 3000; // 3s, 6s, 9s
+      console.log('Groq rate limit 429 - reintentando en ' + (wait/1000) + 's (intento ' + (retries+1) + ')');
+      await new Promise(function(r) { setTimeout(r, wait); });
+      return askGroq(history, doctor, retries + 1);
     }
-  });
-  return res.data.choices[0].message.content;
+    throw err;
+  }
 }
 
 async function transcribeAudio(mediaId, token) {
@@ -200,6 +218,48 @@ function isEmergency(text, doctor) {
   return general.concat(specific).some(function(w) { return (text || '').toLowerCase().includes(w); });
 }
 
+// ── MANEJO DE TIMEOUT DE SESION ─────────────────────────────
+function resetTimeout(convKey, phone, phoneId, token, doctor) {
+  // Limpiar timers anteriores
+  if (timeoutChecks.has(convKey)) {
+    const timers = timeoutChecks.get(convKey);
+    clearTimeout(timers.warn);
+    clearTimeout(timers.close);
+  }
+
+  const now = Date.now();
+  lastActivity.set(convKey, now);
+
+  // Timer de advertencia a los 5 minutos
+  const warnTimer = setTimeout(async function() {
+    // Verificar que no hubo actividad reciente
+    const last = lastActivity.get(convKey) || 0;
+    if (Date.now() - last >= TIMEOUT_WARN - 1000) {
+      try {
+        await sendMeta(phone, 'Hola, sigues ahi? Si necesitas ayuda estoy disponible.', phoneId, token);
+        console.log('Timeout warn enviado a ' + phone);
+      } catch(e) {}
+    }
+  }, TIMEOUT_WARN);
+
+  // Timer de cierre a los 10 minutos
+  const closeTimer = setTimeout(async function() {
+    const last = lastActivity.get(convKey) || 0;
+    if (Date.now() - last >= TIMEOUT_CLOSE - 1000) {
+      try {
+        await sendMeta(phone, 'Cerre nuestra conversacion por inactividad. Cuando quieras retomar escribeme y con gusto te ayudo.', phoneId, token);
+        // Limpiar historial y timers
+        conversations.delete(convKey);
+        lastActivity.delete(convKey);
+        timeoutChecks.delete(convKey);
+        console.log('Sesion cerrada por inactividad: ' + phone);
+      } catch(e) {}
+    }
+  }, TIMEOUT_CLOSE);
+
+  timeoutChecks.set(convKey, { warn: warnTimer, close: closeTimer });
+}
+
 router.get('/webhook', function(req, res) {
   var mode      = req.query['hub.mode'];
   var token     = req.query['hub.verify_token'];
@@ -279,6 +339,8 @@ router.post('/webhook', async function(req, res) {
         await alertDoctor(doctor, phone, history, phoneId, token);
       }
       console.log('Julia respondio a ' + phone);
+      // Reiniciar timeout de sesion
+      resetTimeout(convKey, phone, phoneId, token, doctor);
     }
 
   } catch (err) {

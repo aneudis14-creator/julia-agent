@@ -2,6 +2,7 @@ const express  = require('express');
 const router   = express.Router();
 const axios    = require('axios');
 const FormData = require('form-data');
+const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 
 const conversations = new Map();
 const MAX_HISTORY   = 10;
@@ -55,67 +56,12 @@ function getDoctorByPhoneId(phoneId) {
   };
 }
 
-function buildPrompt(doctor) {
-  const hora = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Santo_Domingo', hour: 'numeric', hour12: false }));
-  const saludo = hora < 12 ? 'Buenos dias' : hora < 18 ? 'Buenas tardes' : 'Buenas noches';
-
-  const clinicasText = doctor.clinicas.map(function(c, i) {
-    return (i+1) + '. ' + c.nombre + ' — ' + c.dias + ', ' + c.horario + ' (' + c.sistema + ')';
-  }).join('\n');
-
-  // Si el negocio tiene rol de ventas activo
-  var ventasExtra = '';
-  if (doctor.ventas) {
-    ventasExtra = '\n\nROL DE VENTAS: Eres también asistente de ventas empática. Tu objetivo es que el cliente agende una cita. NUNCA presiones más de ' + (doctor.objeciones_max || 3) + ' veces.\n' +
-      'CUANDO HAY DOLOR O SÍNTOMAS: Responde con empatía y urgencia suave. Ejemplo: "Ese tipo de molestia no debe ignorarse, puede empeorar. Podemos evaluarlo cuando vengas. ¿Cuándo te viene bien?"\n' +
-      'OBJECIONES DE PRECIO: "Entiendo. La evaluación inicial es económica y además tienes descuento de cliente nuevo. ¿Te agendo?"\n' +
-      'OBJECIONES DE DISTANCIA: "Muchos pacientes vienen de lejos precisamente porque no encuentran este nivel de atención cerca. ¿Cuál sería el mejor día?"\n' +
-      'OBJECIONES DE TIEMPO: "Con 45 minutos es suficiente. ¿Cuándo tienes aunque sea una hora libre?"\n' +
-      'FOTOS DE PIES/UÑAS: Responde con empatía, describe que necesita atención, invita a agendar.\n' +
-      (doctor.promociones ? 'PROMOCIONES ACTIVAS: ' + doctor.promociones + '\n' : '') +
-      (doctor.extras ? 'EXTRAS: ' + doctor.extras + '\n' : '');
-  }
-
-  return 'Eres JULIA, la secretaria del ' + doctor.nombre + ' (' + doctor.especialidad + ') en RD. Atiendes por WhatsApp.\n\n' +
-
-    'PERSONALIDAD: Eres una secretaria dominicana real — inteligente, calida, natural. Conversas como una persona, no como un robot. Una sola pregunta a la vez. Maximo 2 oraciones por mensaje. Nunca uses listas, asteriscos ni formato. Solo texto natural.\n\n' +
-
-    'SALUDO INICIAL: Solo al primer mensaje di "' + saludo + ', soy Julia, la asistente del ' + doctor.nombre + '. Cual es el motivo de su consulta?" — Despues de esto NUNCA vuelvas a presentarte, solo conversa normal.\n\n' +
-
-    'HORA ACTUAL: Son las ' + hora + ':00 en RD. Usa esto para el saludo correcto. ' + (hora < 12 ? 'Es la manana, di buenos dias.' : hora < 18 ? 'Es la tarde, di buenas tardes.' : 'Es la noche, di buenas noches.') + '\n\n' +
-
-    'PARA AGENDAR CITA — hazlo conversando, paso a paso:\n' +
-    'Paso 1: Si no lo dijo, pregunta el motivo de la visita\n' +
-    'Paso 2: Pide su nombre\n' +
-    'Paso 3: Pregunta si tiene seguro medico. Si dice que si, verifica: ' + doctor.seguros + '. Si no lo aceptamos dile con amabilidad.\n' +
-    'Paso 4: Confirma cuando puede venir segun los dias del doctor y dile que es por orden de llegada\n' +
-    'IMPORTANTE: Haz UNA pregunta a la vez. No pidas todos los datos juntos. No pidas edad ni medico referidor.\n\n' +
-
-    'CLINICAS:\n' + clinicasText + '\n\n' +
-
-    'PRECIOS: ' + (doctor.precios.general || '') + ' | Con seguro: ' + (doctor.precios.control || 'consultar') + '\n' +
-    'SEGUROS: ' + doctor.seguros + '\n' +
-    'NO TRABAJA: ' + doctor.no_trabaja + '\n' +
-    'PREPARACION: ' + doctor.preparacion + '\n\n' +
-
-    'REGLAS:\n' +
-    '- JAMAS des diagnosticos medicos\n' +
-    '- JAMAS recetes medicamentos\n' +
-    '- Si preguntan algo medico: "Para eso necesita ver al doctor, con gusto le coordino la cita"\n' +
-    '- Emergencias (' + doctor.sintomas_alerta + '): "Vaya a emergencias de ' + doctor.hospital_referencia + ' ahora' + (doctor.emergencias ? ' o llame al ' + doctor.emergencias : '') + '"\n' +
-    (doctor.whatsapp_directo ? '- Si quieren hablar con alguien: "Puede llamar al ' + doctor.whatsapp_directo + '"\n' : '') +
-    '- Notas de voz: respondes normal, no menciones que fue nota de voz\n' +
-    '- Imagenes de receta: explica brevemente los medicamentos sin diagnosticar\n' +
-    '- Si ya confirmaste una cita di algo como "Perfecto, le esperamos el [dia] tempranito. Traiga cedula y carnet del seguro."\n\n' +
-
-    'Responde siempre como una persona real. Natural. Breve. Humano.';
-}
 
 async function askClaude(history, doctor) {
   var res = await axios.post('https://api.anthropic.com/v1/messages', {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 400,
-    system: buildPrompt(doctor),
+    system: buildSystemPrompt(doctor),
     messages: history,
   }, {
     headers: {

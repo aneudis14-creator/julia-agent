@@ -13,6 +13,30 @@ const TIMEOUT_WARN  = 5 * 60 * 1000;  // 5 minutos -> pregunta si sigue ahi
 const TIMEOUT_CLOSE = 10 * 60 * 1000; // 10 minutos -> cierra sesion
 
 function getDoctorByPhoneId(phoneId) {
+  if (phoneId === process.env.META_PHONE_ID_QUIROPEDIA) {
+    return {
+      key: 'quiropedia',
+      nombre: 'Quiropedia RD',
+      especialidad: 'Quiropodologia - Salud de los pies',
+      whatsapp_directo: '809-425-2314',
+      emergencias: '809-425-2314',
+      clinicas: [{ nombre: 'Quiropedia RD', direccion: 'Plaza La Marquesa I, Local 81, 2do piso, Ciudad Juan Bosch', referencia: 'Arriba de Farmacia Carol', dias: 'Lunes a Sabado', horario: '9:00 AM - 5:30 PM', sistema: 'Con cita previa' }],
+      precios: { evaluacion: 'RD$500', pedicure_clinico: 'RD$2,000', quiropedia_basica: 'RD$3,700', quiropedia_avanzada: 'RD$4,700', pago: 'Efectivo, tarjeta debito/credito, transferencia' },
+      seguros: 'No acepta seguros - solo pago directo',
+      servicios: 'Evaluacion inicial RD$500, Pedicure clinico RD$2000, Eliminacion de callos RD$1000, Verruga plantar RD$1000, Tina pedis RD$1000, Quiropedia basica RD$3700, Quiropedia avanzada RD$4700, Extraccion de laterales sin granuloma RD$2500, Extraccion con granuloma RD$3000, Pedicure antifungico menos 4 dedos RD$1200, Pedicure antifungico mas 5 dedos RD$1800, Fresado RD$4000, Primera cura RD$500, Seguimientos RD$1000, Pedicura pie sano RD$900, Manicura hombre RD$650, Manicura mujer RD$450, Manicure antifungico RD$1000, Retiro gel RD$200, Retiro acrilico RD$200, Pintura en gel RD$500',
+      no_trabaja: 'Domingos y dias feriados',
+      preparacion: 'Llegar puntual. Traer calzado comodo.',
+      info_agendar: 'Nombre completo, servicio que desea y dia y hora preferida.',
+      hospital_referencia: 'Quiropedia RD - Plaza La Marquesa I',
+      restricciones: 'Julia NO da diagnosticos medicos. No dar descuentos sin autorizacion de la supervisora.',
+      sintomas_alerta: 'herida infectada,pie diabetico con herida,sangrado severo,infeccion grave',
+      extras: 'WiFi, cafe y te gratis para todos los pacientes',
+      promociones: 'Martes y jueves: pedicura en gel GRATIS. 10% descuento para clientes nuevos.',
+      ventas: true,
+      objeciones_max: 3,
+      tono: 'cercano',
+    };
+  }
   if (phoneId === process.env.META_PHONE_ID_BATISTA) {
     return {
       key: 'batista',
@@ -223,6 +247,9 @@ router.post('/webhook', async function(req, res) {
     var token = process.env.META_TOKEN_ALCANTARA;
     if (phoneId === process.env.META_PHONE_ID_BATISTA) {
       token = process.env.META_TOKEN_BATISTA;
+    }
+    if (phoneId === process.env.META_PHONE_ID_QUIROPEDIA) {
+      token = process.env.META_TOKEN_QUIROPEDIA;
     }
 
     var doctor = getDoctorByPhoneId(phoneId);

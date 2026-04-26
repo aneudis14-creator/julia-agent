@@ -341,14 +341,19 @@ router.post('/webhook', async function(req, res) {
           }
         });
         reply = claudeRes.data.content[0].text;
-        // Guardar imagen directamente en historial como data URL
-        var dataUrl = 'data:' + mimeType + ';base64,' + imgBase64;
+        // Guardar imagen en imageStore (separado del historial de Claude)
+        var imgKey = convKey + '_' + Date.now();
+        imageStore.set(imgKey, {
+          data: 'data:' + mimeType + ';base64,' + imgBase64,
+          caption: caption,
+          timestamp: Date.now()
+        });
         console.log('Imagen guardada en historial para ' + phone);
+        // Solo agregar texto al historial de Claude (no el base64)
         history.push({ 
           role: 'user', 
           content: '[Imagen enviada]' + (caption ? ': ' + caption : ''),
-          imageData: dataUrl,
-          mimeType: mimeType
+          imageKey: imgKey
         });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
@@ -467,8 +472,14 @@ router.get('/conversations', function(req, res) {
       doctor: doctorKey,
       name: cData.name || null,
       firstSeen: cData.firstSeen || null,
-      messages: history,
+      messages: history.map(function(m) {
+        if (m.imageKey && imageStore.has(m.imageKey)) {
+          return { role: m.role, content: m.content, imageData: imageStore.get(m.imageKey).data };
+        }
+        return { role: m.role, content: m.content };
+      }),
       lastMessage: lastMsg ? lastMsg.content : '',
+      hasImage: messages.some(function(m) { return m.imageKey; }),
       lastRole: lastMsg ? lastMsg.role : '',
       lastActivity: lastActivity,
       msgCount: history.length,

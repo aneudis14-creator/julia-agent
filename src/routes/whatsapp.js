@@ -35,6 +35,12 @@ function getDoctorByPhoneId(phoneId) {
       ventas: true,
       objeciones_max: 3,
       tono: 'cercano',
+      location: {
+        name: 'Quiropedia RD',
+        address: 'Plaza La Marquesa I, Local 81, 2do piso, Ciudad Juan Bosch, Santo Domingo Este. Arriba de Farmacia Carol.',
+        lat: 18.4901,
+        lng: -69.8132
+      },
     };
   }
   if (phoneId === process.env.META_PHONE_ID_BATISTA) {

@@ -7,6 +7,7 @@ const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 const conversations = new Map();
 const MAX_HISTORY   = 10;
 const imageStore    = new Map(); // Guarda imagenes por conversacion
+const clientData    = new Map(); // Guarda datos del cliente por convKey
 const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
 const timeoutChecks = new Map(); // timers activos por conversacion
 
@@ -391,6 +392,40 @@ router.post('/webhook', async function(req, res) {
       if (citaConfirmada(reply)) {
         await alertDoctor(doctor, phone, history, phoneId, token);
       }
+      // Detectar nombre del cliente en la conversacion
+      var convKey2 = doctor.key + '_' + phone;
+      if (!clientData.has(convKey2)) clientData.set(convKey2, { phone: phone, doctor: doctor.key, firstSeen: Date.now() });
+      var cData = clientData.get(convKey2);
+      
+      // Si Julia llamo a alguien por nombre en su respuesta, guardarlo
+      if (reply && !cData.name) {
+        // Buscar patrones como "Mucho gusto [Nombre]" o "Gracias [Nombre]"
+        var nameMatch = reply.match(/(?:gusto|gracias|hola|bienvenid[oa]),?\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)/i);
+        if (nameMatch) {
+          var detectedName = nameMatch[1].trim();
+          var skipWords = ['Julia','Como','Cuál','Qué','Cuándo','Cuando','Donde','Cómo','Aneudis'];
+          if (!skipWords.includes(detectedName) && detectedName.length > 2) {
+            cData.name = detectedName;
+            console.log('Nombre detectado: ' + detectedName + ' para ' + phone);
+          }
+        }
+      }
+      
+      // Detectar si el usuario dio su nombre directamente
+      var lastUserMsg = history.filter(function(h) { return h.role === 'user'; }).slice(-1)[0];
+      if (lastUserMsg && !cData.name) {
+        var userText = lastUserMsg.content || '';
+        // Si el mensaje es corto y parece un nombre (2-4 palabras, sin signos de pregunta)
+        var words = userText.trim().split(/\s+/);
+        if (words.length >= 1 && words.length <= 4 && !userText.includes('?') && !userText.includes('!') && userText.length < 40) {
+          var firstWord = words[0];
+          if (firstWord && firstWord[0] === firstWord[0].toUpperCase() && firstWord[0] !== firstWord[0].toLowerCase()) {
+            cData.name = userText.trim();
+          }
+        }
+      }
+      
+      clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
       // Reiniciar timeout de sesion
       resetTimeout(convKey, phone, phoneId, token, doctor);
@@ -421,10 +456,13 @@ router.get('/conversations', function(req, res) {
     var phone = parts.slice(1).join('_');
     var lastMsg = history.length > 0 ? history[history.length-1] : null;
     var lastActivity = lastActivity_map.get(key) || null;
+    var cData = clientData.get(key) || {};
     convList.push({
       id: key,
       phone: phone,
       doctor: doctorKey,
+      name: cData.name || null,
+      firstSeen: cData.firstSeen || null,
       messages: history,
       lastMessage: lastMsg ? lastMsg.content : '',
       lastRole: lastMsg ? lastMsg.role : '',

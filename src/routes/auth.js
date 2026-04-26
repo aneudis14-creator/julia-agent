@@ -1,71 +1,73 @@
 const express = require('express');
 const router = express.Router();
-const { google } = require('googleapis');
-const logger = require('../services/logger');
+const crypto = require('crypto');
 
-// ── GET /auth/google — Iniciar flujo OAuth (solo necesario 1 vez)
-router.get('/google', (req, res) => {
-  const oauth2Client = new google.auth.OAuth2(
-    process.env.GOOGLE_CLIENT_ID,
-    process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI
-  );
+// Usuarios en memoria (en produccion usar base de datos)
+const USERS = {
+  admin:      { pass: hashPass('julia2026'),      filter: null,         name: 'Administrador' },
+  aneudis:    { pass: hashPass('juliaai2026'),     filter: null,         name: 'Aneudis Batista' },
+  quiropedia: { pass: hashPass('Quiropedia2026'),  filter: 'quiropedia', name: 'Quiropedia RD' },
+  alcantara:  { pass: hashPass('Alcantara2026'),   filter: 'alcantara',  name: 'Dr. Alcantara' },
+};
 
-  const url = oauth2Client.generateAuthUrl({
-    access_type: 'offline',
-    scope: ['https://www.googleapis.com/auth/calendar'],
-    prompt: 'consent', // Forzar pantalla de consentimiento para obtener refresh_token
-  });
+function hashPass(pass) {
+  return crypto.createHash('sha256').update(pass + 'julia_salt_2026').digest('hex');
+}
 
-  logger.info('Redirecting to Google OAuth');
-  res.redirect(url);
+// Login
+router.post('/login', function(req, res) {
+  var user = (req.body.user || '').toLowerCase().trim();
+  var pass = req.body.pass || '';
+  var u = USERS[user];
+  if (!u || u.pass !== hashPass(pass)) {
+    return res.status(401).json({ error: 'Usuario o contrasena incorrectos' });
+  }
+  var token = crypto.randomBytes(32).toString('hex');
+  // Guardar token en memoria (expira en 8 horas)
+  if (!router.sessions) router.sessions = {};
+  router.sessions[token] = { user, filter: u.filter, name: u.name, expires: Date.now() + 8*60*60*1000 };
+  res.json({ token, user, filter: u.filter, name: u.name });
 });
 
-// ── GET /auth/google/callback — Recibir código y mostrar refresh token
-router.get('/google/callback', async (req, res) => {
-  const { code } = req.query;
-
-  if (!code) {
-    return res.status(400).send('No authorization code received');
+// Cambiar contrasena
+router.post('/change-password', function(req, res) {
+  var token = req.headers['x-auth-token'];
+  if (!router.sessions || !router.sessions[token]) return res.status(401).json({ error: 'No autorizado' });
+  var session = router.sessions[token];
+  if (session.expires < Date.now()) return res.status(401).json({ error: 'Sesion expirada' });
+  
+  var user = session.user;
+  var oldPass = req.body.old_pass || '';
+  var newPass = req.body.new_pass || '';
+  
+  if (!USERS[user] || USERS[user].pass !== hashPass(oldPass)) {
+    return res.status(400).json({ error: 'Contrasena actual incorrecta' });
   }
-
-  try {
-    const oauth2Client = new google.auth.OAuth2(
-      process.env.GOOGLE_CLIENT_ID,
-      process.env.GOOGLE_CLIENT_SECRET,
-      process.env.GOOGLE_REDIRECT_URI
-    );
-
-    const { tokens } = await oauth2Client.getToken(code);
-
-    logger.info('Google OAuth tokens received', {
-      hasRefreshToken: !!tokens.refresh_token,
-      hasAccessToken: !!tokens.access_token,
-    });
-
-    // Mostrar el refresh token para que lo copies en .env
-    res.send(`
-      <html>
-        <body style="font-family: monospace; padding: 40px; background: #1a1a2e; color: #e0e0e0;">
-          <h2 style="color: #00d4ff;">✅ Google Calendar conectado exitosamente</h2>
-          <p>Copia el siguiente <strong>GOOGLE_REFRESH_TOKEN</strong> en tu archivo <code>.env</code>:</p>
-          <div style="background: #0d0d1a; padding: 20px; border-radius: 8px; border-left: 4px solid #00d4ff; word-break: break-all; margin: 20px 0;">
-            <strong style="color: #00d4ff;">GOOGLE_REFRESH_TOKEN=</strong>
-            <span style="color: #90ee90;">${tokens.refresh_token || 'NO_REFRESH_TOKEN — asegúrate de usar prompt=consent'}</span>
-          </div>
-          <p><strong>Access Token</strong> (no lo necesitas en .env, se auto-renueva):</p>
-          <div style="background: #0d0d1a; padding: 10px; border-radius: 8px; word-break: break-all; font-size: 12px;">
-            ${tokens.access_token}
-          </div>
-          <p style="color: #ffaa00; margin-top: 30px;">⚠️ Guarda el refresh token de forma segura. No lo compartas.</p>
-          <p style="color: #aaa;">Después de copiar el token, puedes cerrar esta ventana.</p>
-        </body>
-      </html>
-    `);
-  } catch (error) {
-    logger.error('Error getting Google tokens', { error: error.message });
-    res.status(500).send(`Error: ${error.message}`);
+  if (newPass.length < 8) {
+    return res.status(400).json({ error: 'La nueva contrasena debe tener al menos 8 caracteres' });
   }
+  
+  USERS[user].pass = hashPass(newPass);
+  res.json({ success: true, message: 'Contrasena actualizada correctamente' });
+});
+
+// Verificar token
+router.get('/verify', function(req, res) {
+  var token = req.headers['x-auth-token'];
+  if (!router.sessions || !router.sessions[token]) return res.status(401).json({ error: 'No autorizado' });
+  var session = router.sessions[token];
+  if (session.expires < Date.now()) {
+    delete router.sessions[token];
+    return res.status(401).json({ error: 'Sesion expirada' });
+  }
+  res.json({ user: session.user, filter: session.filter, name: session.name });
+});
+
+// Logout
+router.post('/logout', function(req, res) {
+  var token = req.headers['x-auth-token'];
+  if (router.sessions && router.sessions[token]) delete router.sessions[token];
+  res.json({ success: true });
 });
 
 module.exports = router;

@@ -146,6 +146,29 @@ async function sendMeta(to, body, phoneId, token) {
   }
 }
 
+async function sendLocation(to, phoneId, token, name, address, lat, lng) {
+  try {
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      {
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'location',
+        location: {
+          latitude: lat,
+          longitude: lng,
+          name: name,
+          address: address
+        }
+      },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+    );
+    console.log('Ubicacion enviada a ' + to);
+  } catch (err) {
+    console.error('Error enviando ubicacion:', err.message);
+  }
+}
+
 async function alertDoctor(doctor, patientPhone, history, phoneId, token) {
   try {
     var doctorPhone = doctor.whatsapp_directo || doctor.emergencias;
@@ -277,11 +300,64 @@ router.post('/webhook', async function(req, res) {
     } else if (msgType === 'image') {
       await sendMeta(phone, 'Un momentico, estoy revisando la imagen...', phoneId, token);
       var caption = (message.image && message.image.caption) || '';
-      history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
+      var imageId = message.image && message.image.id;
+      try {
+        var imgInfoRes = await axios.get(
+          'https://graph.facebook.com/v20.0/' + imageId,
+          { headers: { 'Authorization': 'Bearer ' + token } }
+        );
+        var imgUrl = imgInfoRes.data.url;
+        var mimeType = imgInfoRes.data.mime_type || 'image/jpeg';
+        var imgRes = await axios.get(imgUrl, {
+          responseType: 'arraybuffer',
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        var imgBase64 = Buffer.from(imgRes.data).toString('base64');
+        var visionMessages = history.concat([{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: mimeType, data: imgBase64 } },
+            { type: 'text', text: caption ? 'El paciente envio esta imagen y dice: ' + caption : 'El paciente envio esta imagen. Evaluala con tu conocimiento y responde de forma empatica.' }
+          ]
+        }]);
+        var claudeRes = await axios.post('https://api.anthropic.com/v1/messages', {
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 400,
+          system: buildSystemPrompt(doctor),
+          messages: visionMessages,
+        }, {
+          headers: {
+            'x-api-key': process.env.ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'Content-Type': 'application/json',
+          }
+        });
+        reply = claudeRes.data.content[0].text;
+        history.push({ role: 'user', content: '[Imagen enviada]' + (caption ? ': ' + caption : '') });
+      } catch(imgErr) {
+        console.error('Error procesando imagen:', imgErr.message);
+        history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
+        reply = await askClaude(history, doctor);
+      }
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-      reply = await askClaude(history, doctor);
 
     } else if (msgType === 'text') {
+      // Detectar si piden ubicacion/direccion/como llegar
+      var askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
+      
+      if (askingLocation && doctor.location) {
+        // Enviar texto primero
+        history.push({ role: 'user', content: msgText });
+        if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+        reply = await askClaude(history, doctor);
+        history.push({ role: 'assistant', content: reply });
+        await sendMeta(phone, reply, phoneId, token);
+        // Luego enviar ubicacion
+        await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
+        console.log('Julia respondio con texto + ubicacion a ' + phone);
+        return;
+      }
+      
       if (isEmergency(msgText, doctor)) {
         reply = 'Esto requiere atencion inmediata. Por favor dirigase a ' + doctor.hospital_referencia + ' de urgencia' + (doctor.emergencias ? ' o llame al ' + doctor.emergencias : '') + '.';
       } else {

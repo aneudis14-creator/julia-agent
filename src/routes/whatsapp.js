@@ -341,15 +341,17 @@ router.post('/webhook', async function(req, res) {
           }
         });
         reply = claudeRes.data.content[0].text;
-        // Guardar imagen en store
-        var imgKey = convKey + '_img_' + Date.now();
+        // Guardar imagen en store con key simple
+        var imgTimestamp = Date.now();
+        var imgKey = doctor.key + '_' + phone.replace(/\D/g,'') + '_' + imgTimestamp;
         imageStore.set(imgKey, {
           base64: imgBase64,
           mimeType: mimeType,
           caption: caption,
-          timestamp: Date.now(),
+          timestamp: imgTimestamp,
           convKey: convKey
         });
+        console.log('Imagen guardada con key: ' + imgKey);
         history.push({ role: 'user', content: '[Imagen:' + imgKey + ']' + (caption ? ': ' + caption : '') });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
@@ -413,14 +415,19 @@ router.post('/webhook', async function(req, res) {
       
       // Detectar si el usuario dio su nombre directamente
       var lastUserMsg = history.filter(function(h) { return h.role === 'user'; }).slice(-1)[0];
+      var skipPhrases = ['hola','buenas','buenos','si','no','ok','okay','gracias','claro','perfecto','bien','este','esto',
+        'quiero','puedo','tengo','donde','cuando','como','que','cual','cuanto','una','uno','soy','me','mi','le','les',
+        'buen','bueno','buena','buenas dias','buenas tardes','buenas noches','buenos dias'];
       if (lastUserMsg && !cData.name) {
-        var userText = lastUserMsg.content || '';
-        // Si el mensaje es corto y parece un nombre (2-4 palabras, sin signos de pregunta)
-        var words = userText.trim().split(/\s+/);
-        if (words.length >= 1 && words.length <= 4 && !userText.includes('?') && !userText.includes('!') && userText.length < 40) {
+        var userText = (lastUserMsg.content || '').trim();
+        var userTextLower = userText.toLowerCase();
+        var words = userText.split(/\s+/);
+        var isSkip = skipPhrases.some(function(s) { return userTextLower === s || userTextLower.startsWith(s + ' '); });
+        // Nombre: 1-4 palabras, empieza con mayuscula, no es saludo
+        if (!isSkip && words.length >= 1 && words.length <= 4 && !userText.includes('?') && !userText.includes('!') && userText.length < 45) {
           var firstWord = words[0];
-          if (firstWord && firstWord[0] === firstWord[0].toUpperCase() && firstWord[0] !== firstWord[0].toLowerCase()) {
-            cData.name = userText.trim();
+          if (firstWord && firstWord.length > 2 && firstWord[0] === firstWord[0].toUpperCase() && /^[A-ZÁÉÍÓÚÑa-záéíóúñ]+$/.test(firstWord)) {
+            cData.name = userText;
           }
         }
       }

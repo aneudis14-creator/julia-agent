@@ -6,6 +6,7 @@ const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 
 const conversations = new Map();
 const MAX_HISTORY   = 10;
+const imageStore    = new Map(); // Guarda imagenes por conversacion
 const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
 const timeoutChecks = new Map(); // timers activos por conversacion
 
@@ -339,7 +340,16 @@ router.post('/webhook', async function(req, res) {
           }
         });
         reply = claudeRes.data.content[0].text;
-        history.push({ role: 'user', content: '[Imagen enviada]' + (caption ? ': ' + caption : '') });
+        // Guardar imagen en store
+        var imgKey = convKey + '_img_' + Date.now();
+        imageStore.set(imgKey, {
+          base64: imgBase64,
+          mimeType: mimeType,
+          caption: caption,
+          timestamp: Date.now(),
+          convKey: convKey
+        });
+        history.push({ role: 'user', content: '[Imagen:' + imgKey + ']' + (caption ? ': ' + caption : '') });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
         history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
@@ -389,6 +399,16 @@ router.post('/webhook', async function(req, res) {
   } catch (err) {
     console.error('Error webhook:', err.message);
   }
+});
+
+router.get('/image/:imgKey', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var imgKey = req.params.imgKey;
+  var img = imageStore.get(imgKey);
+  if (!img) return res.status(404).json({ error: 'Imagen no encontrada' });
+  var buf = Buffer.from(img.base64, 'base64');
+  res.set('Content-Type', img.mimeType || 'image/jpeg');
+  res.send(buf);
 });
 
 router.get('/conversations', function(req, res) {

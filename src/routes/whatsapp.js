@@ -392,6 +392,8 @@ router.post('/webhook', async function(req, res) {
 });
 
 router.get('/conversations', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
   var convList = [];
   conversations.forEach(function(history, key) {
     var parts = key.split('_');
@@ -411,6 +413,12 @@ router.get('/conversations', function(req, res) {
     });
   });
   res.json({ conversations: convList, total: convList.length });
+});
+
+router.options('/conversations', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
+  res.sendStatus(200);
 });
 
 router.get('/status', function(req, res) {

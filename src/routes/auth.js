@@ -15,6 +15,14 @@ function hashPass(pass) {
 }
 
 // Login
+router.use(function(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
+
 router.post('/login', function(req, res) {
   var user = (req.body.user || '').toLowerCase().trim();
   var pass = req.body.pass || '';

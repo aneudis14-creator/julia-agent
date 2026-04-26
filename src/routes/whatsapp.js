@@ -321,7 +321,8 @@ router.post('/webhook', async function(req, res) {
           headers: { 'Authorization': 'Bearer ' + token }
         });
         var imgBase64 = Buffer.from(imgRes.data).toString('base64');
-        var visionMessages = history.concat([{
+        var cleanHistory = history.map(function(m) { return { role: m.role, content: typeof m.content === 'string' ? m.content : '[mensaje previo]' }; });
+        var visionMessages = cleanHistory.concat([{
           role: 'user',
           content: [
             { type: 'image', source: { type: 'base64', media_type: mimeType, data: imgBase64 } },
@@ -466,20 +467,21 @@ router.get('/conversations', function(req, res) {
     var lastMsg = history.length > 0 ? history[history.length-1] : null;
     var lastActivity = lastActivity_map.get(key) || null;
     var cData = clientData.get(key) || {};
+    var mappedMessages = history.map(function(m) {
+      if (m.imageKey && imageStore.has(m.imageKey)) {
+        return { role: m.role, content: m.content, imageData: imageStore.get(m.imageKey).data };
+      }
+      return { role: m.role, content: m.content };
+    });
     convList.push({
       id: key,
       phone: phone,
       doctor: doctorKey,
       name: cData.name || null,
       firstSeen: cData.firstSeen || null,
-      messages: history.map(function(m) {
-        if (m.imageKey && imageStore.has(m.imageKey)) {
-          return { role: m.role, content: m.content, imageData: imageStore.get(m.imageKey).data };
-        }
-        return { role: m.role, content: m.content };
-      }),
+      messages: mappedMessages,
       lastMessage: lastMsg ? lastMsg.content : '',
-      hasImage: messages.some(function(m) { return m.imageKey; }),
+      hasImage: history.some(function(m) { return m.imageKey; }),
       lastRole: lastMsg ? lastMsg.role : '',
       lastActivity: lastActivity,
       msgCount: history.length,

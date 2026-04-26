@@ -6,7 +6,7 @@ const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 
 const conversations = new Map();
 const MAX_HISTORY   = 10;
-const lastActivity  = new Map(); // timestamp ultimo mensaje por conversacion
+const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
 const timeoutChecks = new Map(); // timers activos por conversacion
 
 const TIMEOUT_WARN  = 5 * 60 * 1000;  // 5 minutos -> pregunta si sigue ahi
@@ -215,12 +215,12 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
   }
 
   const now = Date.now();
-  lastActivity.set(convKey, now);
+  lastActivity_map.set(convKey, now);
 
   // Timer de advertencia a los 5 minutos
   const warnTimer = setTimeout(async function() {
     // Verificar que no hubo actividad reciente
-    const last = lastActivity.get(convKey) || 0;
+    const last = lastActivity_map.get(convKey) || 0;
     if (Date.now() - last >= TIMEOUT_WARN - 1000) {
       try {
         await sendMeta(phone, 'Hola, sigues ahi? Si necesitas ayuda estoy disponible.', phoneId, token);
@@ -231,13 +231,13 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
 
   // Timer de cierre a los 10 minutos
   const closeTimer = setTimeout(async function() {
-    const last = lastActivity.get(convKey) || 0;
+    const last = lastActivity_map.get(convKey) || 0;
     if (Date.now() - last >= TIMEOUT_CLOSE - 1000) {
       try {
         await sendMeta(phone, 'Cerre nuestra conversacion por inactividad. Cuando quieras retomar escribeme y con gusto te ayudo.', phoneId, token);
         // Limpiar historial y timers
         conversations.delete(convKey);
-        lastActivity.delete(convKey);
+        lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);
         console.log('Sesion cerrada por inactividad: ' + phone);
       } catch(e) {}
@@ -389,6 +389,28 @@ router.post('/webhook', async function(req, res) {
   } catch (err) {
     console.error('Error webhook:', err.message);
   }
+});
+
+router.get('/conversations', function(req, res) {
+  var convList = [];
+  conversations.forEach(function(history, key) {
+    var parts = key.split('_');
+    var doctorKey = parts[0];
+    var phone = parts.slice(1).join('_');
+    var lastMsg = history.length > 0 ? history[history.length-1] : null;
+    var lastActivity = lastActivity_map.get(key) || null;
+    convList.push({
+      id: key,
+      phone: phone,
+      doctor: doctorKey,
+      messages: history,
+      lastMessage: lastMsg ? lastMsg.content : '',
+      lastRole: lastMsg ? lastMsg.role : '',
+      lastActivity: lastActivity,
+      msgCount: history.length,
+    });
+  });
+  res.json({ conversations: convList, total: convList.length });
 });
 
 router.get('/status', function(req, res) {

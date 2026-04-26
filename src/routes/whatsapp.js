@@ -415,6 +415,53 @@ router.get('/conversations', function(req, res) {
   res.json({ conversations: convList, total: convList.length });
 });
 
+router.post('/send-message', async function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
+  try {
+    var phone = req.body.phone;
+    var message = req.body.message;
+    var doctorKey = req.body.doctor;
+
+    if (!phone || !message || !doctorKey) {
+      return res.status(400).json({ error: 'Faltan datos: phone, message, doctor' });
+    }
+
+    // Get token based on doctor
+    var token = process.env.META_TOKEN_ALCANTARA;
+    var phoneId = process.env.META_PHONE_ID_ALCANTARA;
+
+    if (doctorKey === 'quiropedia') {
+      token = process.env.META_TOKEN_QUIROPEDIA;
+      phoneId = process.env.META_PHONE_ID_QUIROPEDIA;
+    } else if (doctorKey === 'batista') {
+      token = process.env.META_TOKEN_BATISTA;
+      phoneId = process.env.META_PHONE_ID_BATISTA;
+    }
+
+    await sendMeta(phone, message, phoneId, token);
+
+    // Add to conversation history
+    var convKey = doctorKey + '_' + phone;
+    if (conversations.has(convKey)) {
+      conversations.get(convKey).push({ role: 'assistant', content: '[Admin]: ' + message });
+    }
+
+    console.log('Mensaje admin enviado a ' + phone + ' via ' + doctorKey);
+    res.json({ success: true });
+  } catch(err) {
+    console.error('Error enviando mensaje admin:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.options('/send-message', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
+  res.header('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.sendStatus(200);
+});
+
 router.options('/conversations', function(req, res) {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');

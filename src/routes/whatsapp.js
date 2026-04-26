@@ -341,18 +341,15 @@ router.post('/webhook', async function(req, res) {
           }
         });
         reply = claudeRes.data.content[0].text;
-        // Guardar imagen en store con key simple
-        var imgTimestamp = Date.now();
-        var imgKey = doctor.key + '_' + phone.replace(/\D/g,'') + '_' + imgTimestamp;
-        imageStore.set(imgKey, {
-          base64: imgBase64,
-          mimeType: mimeType,
-          caption: caption,
-          timestamp: imgTimestamp,
-          convKey: convKey
+        // Guardar imagen directamente en historial como data URL
+        var dataUrl = 'data:' + mimeType + ';base64,' + imgBase64;
+        console.log('Imagen guardada en historial para ' + phone);
+        history.push({ 
+          role: 'user', 
+          content: '[Imagen enviada]' + (caption ? ': ' + caption : ''),
+          imageData: dataUrl,
+          mimeType: mimeType
         });
-        console.log('Imagen guardada con key: ' + imgKey);
-        history.push({ role: 'user', content: '[Imagen:' + imgKey + ']' + (caption ? ': ' + caption : '') });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
         history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });

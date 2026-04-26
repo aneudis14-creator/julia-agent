@@ -90,11 +90,15 @@ function getDoctorByPhoneId(phoneId) {
 
 
 async function askClaude(history, doctor) {
+  // Filtrar campos internos antes de enviar a Claude
+  var cleanMessages = history.map(function(m) {
+    return { role: m.role, content: m.content };
+  });
   var res = await axios.post('https://api.anthropic.com/v1/messages', {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 400,
     system: buildSystemPrompt(doctor),
-    messages: history,
+    messages: cleanMessages,
   }, {
     headers: {
       'x-api-key': process.env.ANTHROPIC_API_KEY,
@@ -342,19 +346,13 @@ router.post('/webhook', async function(req, res) {
           }
         });
         reply = claudeRes.data.content[0].text;
-        // Guardar imagen en imageStore (separado del historial de Claude)
-        var imgKey = convKey + '_' + Date.now();
-        imageStore.set(imgKey, {
-          data: 'data:' + mimeType + ';base64,' + imgBase64,
-          caption: caption,
-          timestamp: Date.now()
-        });
+        // Guardar imagen DIRECTAMENTE en el historial (survives restarts)
+        var dataUrl = 'data:' + mimeType + ';base64,' + imgBase64;
         console.log('Imagen guardada en historial para ' + phone);
-        // Solo agregar texto al historial de Claude (no el base64)
         history.push({ 
           role: 'user', 
           content: '[Imagen enviada]' + (caption ? ': ' + caption : ''),
-          imageKey: imgKey
+          _imageData: dataUrl  // campo interno, NO se envia a Claude
         });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
@@ -468,8 +466,8 @@ router.get('/conversations', function(req, res) {
     var lastActivity = lastActivity_map.get(key) || null;
     var cData = clientData.get(key) || {};
     var mappedMessages = history.map(function(m) {
-      if (m.imageKey && imageStore.has(m.imageKey)) {
-        return { role: m.role, content: m.content, imageData: imageStore.get(m.imageKey).data };
+      if (m._imageData) {
+        return { role: m.role, content: m.content, imageData: m._imageData };
       }
       return { role: m.role, content: m.content };
     });
@@ -481,7 +479,7 @@ router.get('/conversations', function(req, res) {
       firstSeen: cData.firstSeen || null,
       messages: mappedMessages,
       lastMessage: lastMsg ? lastMsg.content : '',
-      hasImage: history.some(function(m) { return m.imageKey; }),
+      hasImage: history.some(function(m) { return m._imageData; }),
       lastRole: lastMsg ? lastMsg.role : '',
       lastActivity: lastActivity,
       msgCount: history.length,

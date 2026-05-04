@@ -148,11 +148,21 @@ function parseAppointmentDate(dateStr, timeStr) {
   }
   console.log('[Calendar] Parseando fecha:', dateStr, 'hora:', timeStr);
   try {
-    // Hora actual en RD
+    // Obtener fecha actual en RD usando partes
     var now = new Date();
-    var rdNowStr = now.toLocaleString('en-US', { timeZone: 'America/Santo_Domingo' });
-    var rdNow = new Date(rdNowStr);
-    var target = new Date(rdNow);
+    var rdParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/Santo_Domingo',
+      year: 'numeric', month: '2-digit', day: '2-digit', weekday: 'short'
+    }).formatToParts(now);
+    var rdYear = parseInt(rdParts.find(p => p.type === 'year').value);
+    var rdMonth = parseInt(rdParts.find(p => p.type === 'month').value);
+    var rdDay = parseInt(rdParts.find(p => p.type === 'day').value);
+    var rdWeekday = rdParts.find(p => p.type === 'weekday').value;
+    var weekdayMap = { 'Sun': 0, 'Mon': 1, 'Tue': 2, 'Wed': 3, 'Thu': 4, 'Fri': 5, 'Sat': 6 };
+    var currentDayOfWeek = weekdayMap[rdWeekday];
+    
+    // target en zona RD - usamos un Date local que represente esa fecha
+    var target = new Date(rdYear, rdMonth - 1, rdDay);
 
     var dateLower = dateStr.toLowerCase()
       .replace(/[á]/g, 'a').replace(/[é]/g, 'e').replace(/[í]/g, 'i')
@@ -160,20 +170,21 @@ function parseAppointmentDate(dateStr, timeStr) {
     
     var dayMap = { 'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'jueves': 4, 'viernes': 5, 'sabado': 6 };
 
-    if (dateLower.indexOf('manana') !== -1) {
+    if (dateLower.indexOf('pasado manana') !== -1) {
+      target.setDate(target.getDate() + 2);
+      console.log('[Calendar] Detectado: pasado manana');
+    } else if (dateLower.indexOf('manana') !== -1) {
       target.setDate(target.getDate() + 1);
       console.log('[Calendar] Detectado: manana');
     } else if (dateLower.indexOf('hoy') !== -1) {
       console.log('[Calendar] Detectado: hoy');
-    } else if (dateLower.indexOf('pasado manana') !== -1) {
-      target.setDate(target.getDate() + 2);
     } else {
       var foundDay = -1;
       Object.keys(dayMap).forEach(function(d) {
         if (dateLower.indexOf(d) !== -1) foundDay = dayMap[d];
       });
       if (foundDay >= 0) {
-        var daysAhead = (foundDay - target.getDay() + 7) % 7;
+        var daysAhead = (foundDay - currentDayOfWeek + 7) % 7;
         if (daysAhead === 0) daysAhead = 7;
         target.setDate(target.getDate() + daysAhead);
         console.log('[Calendar] Dia encontrado, dias adelante: ' + daysAhead);

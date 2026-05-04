@@ -393,11 +393,28 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
   const now = Date.now();
   lastActivity_map.set(convKey, now);
 
+  // Funcion para detectar si Julia ya se despidio
+  function juliaAlreadyClosed(history) {
+    if (!history || history.length === 0) return false;
+    var lastMsgs = history.slice(-3); // ultimas 3 respuestas
+    var closeKeywords = ['quedo a la orden', 'estamos a la orden', 'con gusto le atendemos', 'aqui estamos', 'que tenga buen dia', 'que tenga buenos', 'nos vemos', 'le esperamos el', 'queda agendad'];
+    return lastMsgs.some(function(m) {
+      if (m.role !== 'assistant') return false;
+      var text = (m.content || '').toLowerCase();
+      return closeKeywords.some(function(k) { return text.indexOf(k) !== -1; });
+    });
+  }
+
   // Timer de advertencia a los 5 minutos
   const warnTimer = setTimeout(async function() {
-    // Verificar que no hubo actividad reciente
     const last = lastActivity_map.get(convKey) || 0;
     if (Date.now() - last >= TIMEOUT_WARN - 1000) {
+      // No enviar si Julia ya se despidio
+      var hist = conversations.get(convKey);
+      if (juliaAlreadyClosed(hist)) {
+        console.log('Skip warn - Julia ya se despidio: ' + phone);
+        return;
+      }
       try {
         await sendMeta(phone, 'Hola, sigues ahi? Si necesitas ayuda estoy disponible.', phoneId, token);
         console.log('Timeout warn enviado a ' + phone);
@@ -409,9 +426,17 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
   const closeTimer = setTimeout(async function() {
     const last = lastActivity_map.get(convKey) || 0;
     if (Date.now() - last >= TIMEOUT_CLOSE - 1000) {
+      // No enviar mensaje de cierre si Julia ya se despidio - solo limpiar
+      var hist = conversations.get(convKey);
+      if (juliaAlreadyClosed(hist)) {
+        conversations.delete(convKey);
+        lastActivity_map.delete(convKey);
+        timeoutChecks.delete(convKey);
+        console.log('Sesion cerrada limpiamente: ' + phone);
+        return;
+      }
       try {
         await sendMeta(phone, 'Cerre nuestra conversacion por inactividad. Cuando quieras retomar escribeme y con gusto te ayudo.', phoneId, token);
-        // Limpiar historial y timers
         conversations.delete(convKey);
         lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);

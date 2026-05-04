@@ -889,6 +889,37 @@ router.options('/conversations', function(req, res) {
   res.sendStatus(200);
 });
 
+router.get('/calendar-info', async function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctorKey = req.query.doctor || 'quiropedia';
+  var calendar = getCalendarForDoctor(doctorKey);
+  if (!calendar) return res.json({ error: 'Calendar no configurado' });
+  
+  try {
+    // Listar TODOS los calendarios de la cuenta
+    var calList = await calendar.calendarList.list();
+    var calendars = (calList.data.items || []).map(c => ({
+      id: c.id,
+      summary: c.summary,
+      primary: c.primary || false,
+      accessRole: c.accessRole,
+      timeZone: c.timeZone
+    }));
+    
+    // Obtener info del calendario primary
+    var primaryCal = await calendar.calendars.get({ calendarId: 'primary' });
+    
+    res.json({
+      authenticatedAccount: primaryCal.data.id,
+      primaryCalendarTimezone: primaryCal.data.timeZone,
+      allCalendars: calendars,
+      summary: primaryCal.data.summary
+    });
+  } catch(err) {
+    res.json({ error: err.message });
+  }
+});
+
 router.get('/appointments', async function(req, res) {
   res.header('Access-Control-Allow-Origin', '*');
   var doctorKey = req.query.doctor || 'quiropedia';

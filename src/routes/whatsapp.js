@@ -42,7 +42,7 @@ function detectAppointmentConfirmation(text, conversationHistory) {
   console.log('[Calendar] Analizando texto:', normalizedText.substring(0, 150));
   
   // Detectar confirmacion
-  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos'];
+  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos', 'nos vemos el', 'hasta el', 'la espero el', 'lo espero el', 'reservada para', 'agendada para', 'agendado para', 'confirmada para'];
   var hasConfirm = confirmKeywords.some(function(k) { return normalizedText.indexOf(k) !== -1; });
   if (!hasConfirm) {
     console.log('[Calendar] No es confirmacion de cita');
@@ -90,6 +90,13 @@ function detectAppointmentConfirmation(text, conversationHistory) {
   return info;
 }
 
+// Formatea fecha como ISO local SIN convertir a UTC
+function formatLocalISO(date) {
+  var pad = function(n) { return n < 10 ? '0' + n : n; };
+  return date.getFullYear() + '-' + pad(date.getMonth()+1) + '-' + pad(date.getDate()) +
+         'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':00';
+}
+
 async function createCalendarEvent(doctorKey, info, phone) {
   console.log('[Calendar] Intentando crear evento para ' + doctorKey + ' con info:', JSON.stringify(info));
   var calendar = getCalendarForDoctor(doctorKey);
@@ -114,8 +121,8 @@ async function createCalendarEvent(doctorKey, info, phone) {
     var event = {
       summary: 'Cita ' + businessName + ' - ' + (info.name || 'Paciente'),
       description: 'Cita agendada por Julia AI\nPaciente: ' + (info.name || 'Sin nombre') + '\nTelefono: +' + phone + '\nServicio: Evaluacion podologica',
-      start: { dateTime: startDate.toISOString(), timeZone: 'America/Santo_Domingo' },
-      end: { dateTime: endDate.toISOString(), timeZone: 'America/Santo_Domingo' },
+      start: { dateTime: formatLocalISO(startDate), timeZone: 'America/Santo_Domingo' },
+      end: { dateTime: formatLocalISO(endDate), timeZone: 'America/Santo_Domingo' },
       reminders: {
         useDefault: false,
         overrides: [
@@ -185,32 +192,37 @@ function parseAppointmentDate(dateStr, timeStr) {
     var hour = parseInt(hourMatch[1]);
     var minute = hourMatch[2] ? parseInt(hourMatch[2]) : 0;
 
-    var isPM = timeLower.indexOf('pm') !== -1 || timeLower.indexOf('p.m') !== -1 || timeLower.indexOf('tarde') !== -1 || timeLower.indexOf('noche') !== -1;
-    var isAM = timeLower.indexOf('am') !== -1 || timeLower.indexOf('a.m') !== -1 || timeLower.indexOf('manana') !== -1;
-
-    // Si no especifica AM/PM y es 1-7, asumir PM (horario laboral)
-    // Si no especifica y es 8-12, asumir AM
+    // Detectar AM/PM con regex (word boundaries) para no falsos positivos
+    var isPM = /\b(pm|p\.m\.?|tarde|noche)\b/i.test(timeLower);
+    var isAM = /\b(am|a\.m\.?)\b/i.test(timeLower);
+    
+    // Si menciona "manana" como hora del dia (no como dia "el manana")
+    if (!isPM && !isAM && /(de la manana|en la manana)/i.test(timeLower)) isAM = true;
+    
+    // Si no especifica AM/PM
     if (!isPM && !isAM) {
       if (hour >= 1 && hour <= 7) isPM = true;
       else isAM = true;
     }
 
+    console.log('[Calendar] Hora antes conversion: ' + hour + ' isPM=' + isPM + ' isAM=' + isAM);
+    
     if (isPM && hour < 12) hour += 12;
     if (isAM && hour === 12) hour = 0;
+    
+    console.log('[Calendar] Hora despues conversion: ' + hour);
 
     target.setHours(hour, minute, 0, 0);
     
     // Validar horario laboral (9 AM - 5:30 PM, lunes a sabado)
     var dayOfWeek = target.getDay();
-    var hourCheck = target.getHours();
-    var minCheck = target.getMinutes();
-    var isWeekday = dayOfWeek >= 1 && dayOfWeek <= 6; // lunes-sabado
-    var isWorkHour = (hourCheck >= 9) && (hourCheck < 17 || (hourCheck === 17 && minCheck <= 30));
+    var isWeekday = dayOfWeek >= 1 && dayOfWeek <= 6;
+    var isWorkHour = (hour >= 9) && (hour < 17 || (hour === 17 && minute <= 30));
     
-    console.log('[Calendar] Fecha calculada:', target.toString(), '| Laborable:', isWeekday && isWorkHour);
+    console.log('[Calendar] Fecha calculada:', target.toString(), '| Laborable:', isWeekday && isWorkHour, '| Hora:', hour + ':' + minute);
     
     if (!isWeekday) console.log('[Calendar] WARN: Fecha cae en domingo!');
-    if (!isWorkHour) console.log('[Calendar] WARN: Hora fuera de horario laboral');
+    if (!isWorkHour) console.log('[Calendar] WARN: Hora fuera de horario laboral (' + hour + ':' + minute + ')');
     
     return target;
   } catch(e) {

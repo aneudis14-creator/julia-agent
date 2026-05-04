@@ -25,35 +25,79 @@ function getCalendarForDoctor(doctorKey) {
 
 // Detectar si Julia confirmo una cita en su respuesta
 function detectAppointmentConfirmation(text, conversationHistory) {
-  var lowerText = (text || '').toLowerCase();
+  if (!text) return null;
+  
+  // Normalizar texto: quitar tildes y bajar a minusculas
+  function normalize(s) {
+    return s.toLowerCase()
+      .replace(/[áÁ]/g, 'a')
+      .replace(/[éÉ]/g, 'e')
+      .replace(/[íÍ]/g, 'i')
+      .replace(/[óÓ]/g, 'o')
+      .replace(/[úÚ]/g, 'u')
+      .replace(/[ñÑ]/g, 'n');
+  }
+  
+  var normalizedText = normalize(text);
+  console.log('[Calendar] Analizando texto:', normalizedText.substring(0, 150));
+  
+  // Detectar confirmacion
   var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos'];
-  var hasConfirm = confirmKeywords.some(function(k) { return lowerText.indexOf(k) !== -1; });
-  if (!hasConfirm) return null;
-
-  // Extraer informacion del mensaje y del historial
+  var hasConfirm = confirmKeywords.some(function(k) { return normalizedText.indexOf(k) !== -1; });
+  if (!hasConfirm) {
+    console.log('[Calendar] No es confirmacion de cita');
+    return null;
+  }
+  
+  console.log('[Calendar] Confirmacion detectada!');
+  
   var info = { name: null, date: null, time: null };
-
-  // Buscar nombre - "Perfecto [Nombre]" o "queda agendado [Nombre]"
-  var nameMatch = text.match(/(?:perfecto|gusto|hola|agendad[oa])[,\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)/);
-  if (nameMatch) info.name = nameMatch[1].trim();
-
-  // Buscar dia - "para el lunes 5", "para manana", "para el sabado"
-  var dayMatch = text.match(/para\s+(?:el\s+)?(manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)(?:\s+(\d{1,2}))?/i);
-  if (dayMatch) info.date = dayMatch[0].replace(/^para\s+(?:el\s+)?/i, '').trim();
-
-  // Buscar hora - "a las 9:00 AM", "a las 3pm"
-  var timeMatch = text.match(/a\s+las\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|de la (?:manana|tarde|noche))?)/i);
-  if (timeMatch) info.time = timeMatch[1].trim();
-
+  
+  // Buscar nombre - "Perfecto [Nombre]"
+  var nameMatch = text.match(/(?:perfecto|gusto)[,\s]+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+)?)/i);
+  if (nameMatch) {
+    info.name = nameMatch[1].trim();
+    console.log('[Calendar] Nombre:', info.name);
+  }
+  
+  // Buscar dia (sin tildes)
+  var dayWords = ['manana', 'hoy', 'lunes', 'martes', 'miercoles', 'jueves', 'viernes', 'sabado', 'domingo'];
+  for (var i = 0; i < dayWords.length; i++) {
+    if (normalizedText.indexOf(dayWords[i]) !== -1) {
+      info.date = dayWords[i];
+      console.log('[Calendar] Dia:', info.date);
+      break;
+    }
+  }
+  
+  // Buscar hora - mas flexible
+  var timePatterns = [
+    /a\s+las\s+(\d{1,2}(?::\d{2})?)\s*(am|pm|a\.m\.|p\.m\.)/i,
+    /(\d{1,2}(?::\d{2})?)\s*(am|pm|a\.m\.|p\.m\.)/i,
+    /a\s+las\s+(\d{1,2}(?::\d{2})?)/i
+  ];
+  
+  for (var p = 0; p < timePatterns.length; p++) {
+    var timeMatch = text.match(timePatterns[p]);
+    if (timeMatch) {
+      info.time = timeMatch[1] + (timeMatch[2] ? ' ' + timeMatch[2] : '');
+      console.log('[Calendar] Hora:', info.time);
+      break;
+    }
+  }
+  
+  console.log('[Calendar] Info final:', JSON.stringify(info));
   return info;
 }
 
 async function createCalendarEvent(doctorKey, info, phone) {
+  console.log('[Calendar] Intentando crear evento para ' + doctorKey + ' con info:', JSON.stringify(info));
   var calendar = getCalendarForDoctor(doctorKey);
   if (!calendar) {
-    console.log('Google Calendar no configurado para ' + doctorKey);
+    console.log('[Calendar] ERROR: Google Calendar no configurado para ' + doctorKey + ' - revisar GOOGLE_REFRESH_TOKEN_' + doctorKey.toUpperCase());
     return null;
   }
+  console.log('[Calendar] Calendar OK, procediendo...');
 
   try {
     // Convertir dia/hora a fecha real
@@ -91,49 +135,86 @@ async function createCalendarEvent(doctorKey, info, phone) {
 }
 
 function parseAppointmentDate(dateStr, timeStr) {
-  if (!dateStr || !timeStr) return null;
+  if (!dateStr || !timeStr) {
+    console.log('[Calendar] parseAppointmentDate: faltan datos. date=' + dateStr + ' time=' + timeStr);
+    return null;
+  }
+  console.log('[Calendar] Parseando fecha:', dateStr, 'hora:', timeStr);
   try {
+    // Hora actual en RD
     var now = new Date();
-    var rdNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Santo_Domingo' }));
+    var rdNowStr = now.toLocaleString('en-US', { timeZone: 'America/Santo_Domingo' });
+    var rdNow = new Date(rdNowStr);
     var target = new Date(rdNow);
 
-    var dateLower = dateStr.toLowerCase();
-    var dayMap = { 'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'miércoles': 3, 'jueves': 4, 'viernes': 5, 'sabado': 6, 'sábado': 6 };
+    var dateLower = dateStr.toLowerCase()
+      .replace(/[á]/g, 'a').replace(/[é]/g, 'e').replace(/[í]/g, 'i')
+      .replace(/[ó]/g, 'o').replace(/[ú]/g, 'u');
+    
+    var dayMap = { 'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'jueves': 4, 'viernes': 5, 'sabado': 6 };
 
-    if (dateLower.indexOf('manana') !== -1 || dateLower.indexOf('mañana') !== -1) {
+    if (dateLower.indexOf('manana') !== -1) {
       target.setDate(target.getDate() + 1);
+      console.log('[Calendar] Detectado: manana');
     } else if (dateLower.indexOf('hoy') !== -1) {
-      // hoy = mismo dia
+      console.log('[Calendar] Detectado: hoy');
+    } else if (dateLower.indexOf('pasado manana') !== -1) {
+      target.setDate(target.getDate() + 2);
     } else {
-      // buscar dia de la semana
       var foundDay = -1;
       Object.keys(dayMap).forEach(function(d) {
         if (dateLower.indexOf(d) !== -1) foundDay = dayMap[d];
       });
       if (foundDay >= 0) {
         var daysAhead = (foundDay - target.getDay() + 7) % 7;
-        if (daysAhead === 0) daysAhead = 7; // si es el mismo dia, asumir proxima semana
+        if (daysAhead === 0) daysAhead = 7;
         target.setDate(target.getDate() + daysAhead);
+        console.log('[Calendar] Dia encontrado, dias adelante: ' + daysAhead);
+      } else {
+        console.log('[Calendar] WARN: No se identifico dia');
       }
     }
 
-    // Parse time - "9:00 AM", "9 AM", "3 PM", "9 de la manana"
+    // Parse hora con mas patrones
     var timeLower = timeStr.toLowerCase();
     var hourMatch = timeLower.match(/(\d{1,2})(?::(\d{2}))?/);
-    if (!hourMatch) return null;
+    if (!hourMatch) {
+      console.log('[Calendar] No se encontro hora');
+      return null;
+    }
     var hour = parseInt(hourMatch[1]);
     var minute = hourMatch[2] ? parseInt(hourMatch[2]) : 0;
 
-    var isPM = timeLower.indexOf('pm') !== -1 || timeLower.indexOf('tarde') !== -1 || timeLower.indexOf('noche') !== -1;
-    var isAM = timeLower.indexOf('am') !== -1 || timeLower.indexOf('manana') !== -1 || timeLower.indexOf('mañana') !== -1;
+    var isPM = timeLower.indexOf('pm') !== -1 || timeLower.indexOf('p.m') !== -1 || timeLower.indexOf('tarde') !== -1 || timeLower.indexOf('noche') !== -1;
+    var isAM = timeLower.indexOf('am') !== -1 || timeLower.indexOf('a.m') !== -1 || timeLower.indexOf('manana') !== -1;
+
+    // Si no especifica AM/PM y es 1-7, asumir PM (horario laboral)
+    // Si no especifica y es 8-12, asumir AM
+    if (!isPM && !isAM) {
+      if (hour >= 1 && hour <= 7) isPM = true;
+      else isAM = true;
+    }
 
     if (isPM && hour < 12) hour += 12;
     if (isAM && hour === 12) hour = 0;
 
     target.setHours(hour, minute, 0, 0);
+    
+    // Validar horario laboral (9 AM - 5:30 PM, lunes a sabado)
+    var dayOfWeek = target.getDay();
+    var hourCheck = target.getHours();
+    var minCheck = target.getMinutes();
+    var isWeekday = dayOfWeek >= 1 && dayOfWeek <= 6; // lunes-sabado
+    var isWorkHour = (hourCheck >= 9) && (hourCheck < 17 || (hourCheck === 17 && minCheck <= 30));
+    
+    console.log('[Calendar] Fecha calculada:', target.toString(), '| Laborable:', isWeekday && isWorkHour);
+    
+    if (!isWeekday) console.log('[Calendar] WARN: Fecha cae en domingo!');
+    if (!isWorkHour) console.log('[Calendar] WARN: Hora fuera de horario laboral');
+    
     return target;
   } catch(e) {
-    console.error('Error parsing date:', e.message);
+    console.error('[Calendar] Error parsing date:', e.message);
     return null;
   }
 }

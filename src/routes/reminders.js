@@ -152,8 +152,8 @@ async function checkRemindersForDoctor(doctorKey) {
       const fecha = formatFecha(apptDate);
       const hora = formatHora(apptDate);
 
-      // Recordatorio 24h
-      if (diffHrs <= 24 && diffHrs > 23 && !sent.includes('24h')) {
+      // Recordatorio 24h - ventana 22-24h
+      if (diffHrs <= 24 && diffHrs >= 22 && !sent.includes('24h')) {
         const msg = getReminderMessage(doctorKey, '24h', name, fecha, hora);
         const ok = await sendWAMeta(phone, msg, doctorKey);
         if (ok) {
@@ -163,8 +163,8 @@ async function checkRemindersForDoctor(doctorKey) {
         }
       }
 
-      // Recordatorio 2h
-      if (diffHrs <= 2 && diffHrs > 1.8 && !sent.includes('2h')) {
+      // Recordatorio 2h - ventana 1.5-2.5h
+      if (diffHrs <= 2.5 && diffHrs >= 1.5 && !sent.includes('2h')) {
         const msg = getReminderMessage(doctorKey, '2h', name, fecha, hora);
         const ok = await sendWAMeta(phone, msg, doctorKey);
         if (ok) {

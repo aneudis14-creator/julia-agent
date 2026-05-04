@@ -3,6 +3,141 @@ const router   = express.Router();
 const axios    = require('axios');
 const FormData = require('form-data');
 const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
+const { google } = require('googleapis');
+
+// ── GOOGLE CALENDAR HELPERS ──────────────────────────────
+function getCalendarForDoctor(doctorKey) {
+  var refreshToken = null;
+  if (doctorKey === 'quiropedia') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_QUIROPEDIA;
+  else if (doctorKey === 'alcantara') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_ALCANTARA;
+  else if (doctorKey === 'batista') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_BATISTA;
+
+  if (!refreshToken || refreshToken === 'pending') return null;
+
+  var auth = new google.auth.OAuth2(
+    process.env.GOOGLE_CLIENT_ID,
+    process.env.GOOGLE_CLIENT_SECRET,
+    process.env.GOOGLE_REDIRECT_URI || 'https://julia-agent-production.up.railway.app/auth/google/callback'
+  );
+  auth.setCredentials({ refresh_token: refreshToken });
+  return google.calendar({ version: 'v3', auth: auth });
+}
+
+// Detectar si Julia confirmo una cita en su respuesta
+function detectAppointmentConfirmation(text, conversationHistory) {
+  var lowerText = (text || '').toLowerCase();
+  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos'];
+  var hasConfirm = confirmKeywords.some(function(k) { return lowerText.indexOf(k) !== -1; });
+  if (!hasConfirm) return null;
+
+  // Extraer informacion del mensaje y del historial
+  var info = { name: null, date: null, time: null };
+
+  // Buscar nombre - "Perfecto [Nombre]" o "queda agendado [Nombre]"
+  var nameMatch = text.match(/(?:perfecto|gusto|hola|agendad[oa])[,\s]+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)?)/);
+  if (nameMatch) info.name = nameMatch[1].trim();
+
+  // Buscar dia - "para el lunes 5", "para manana", "para el sabado"
+  var dayMatch = text.match(/para\s+(?:el\s+)?(manana|hoy|lunes|martes|miercoles|jueves|viernes|sabado|domingo)(?:\s+(\d{1,2}))?/i);
+  if (dayMatch) info.date = dayMatch[0].replace(/^para\s+(?:el\s+)?/i, '').trim();
+
+  // Buscar hora - "a las 9:00 AM", "a las 3pm"
+  var timeMatch = text.match(/a\s+las\s+(\d{1,2}(?::\d{2})?\s*(?:am|pm|de la (?:manana|tarde|noche))?)/i);
+  if (timeMatch) info.time = timeMatch[1].trim();
+
+  return info;
+}
+
+async function createCalendarEvent(doctorKey, info, phone) {
+  var calendar = getCalendarForDoctor(doctorKey);
+  if (!calendar) {
+    console.log('Google Calendar no configurado para ' + doctorKey);
+    return null;
+  }
+
+  try {
+    // Convertir dia/hora a fecha real
+    var startDate = parseAppointmentDate(info.date, info.time);
+    if (!startDate) {
+      console.log('No se pudo parsear fecha:', info.date, info.time);
+      return null;
+    }
+    var endDate = new Date(startDate.getTime() + 45 * 60 * 1000);
+
+    var businessName = doctorKey === 'quiropedia' ? 'Quiropedia RD'
+      : doctorKey === 'alcantara' ? 'Dr. Alcantara' : 'Dr. Batista';
+
+    var event = {
+      summary: 'Cita ' + businessName + ' - ' + (info.name || 'Paciente'),
+      description: 'Cita agendada por Julia AI\nPaciente: ' + (info.name || 'Sin nombre') + '\nTelefono: +' + phone + '\nServicio: Evaluacion podologica',
+      start: { dateTime: startDate.toISOString(), timeZone: 'America/Santo_Domingo' },
+      end: { dateTime: endDate.toISOString(), timeZone: 'America/Santo_Domingo' },
+      reminders: {
+        useDefault: false,
+        overrides: [
+          { method: 'popup', minutes: 30 },
+          { method: 'email', minutes: 1440 }
+        ]
+      }
+    };
+
+    var result = await calendar.events.insert({ calendarId: 'primary', resource: event });
+    console.log('✅ Cita creada en Calendar: ' + result.data.htmlLink);
+    return result.data;
+  } catch(err) {
+    console.error('Error creando evento Calendar:', err.message);
+    return null;
+  }
+}
+
+function parseAppointmentDate(dateStr, timeStr) {
+  if (!dateStr || !timeStr) return null;
+  try {
+    var now = new Date();
+    var rdNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/Santo_Domingo' }));
+    var target = new Date(rdNow);
+
+    var dateLower = dateStr.toLowerCase();
+    var dayMap = { 'domingo': 0, 'lunes': 1, 'martes': 2, 'miercoles': 3, 'miércoles': 3, 'jueves': 4, 'viernes': 5, 'sabado': 6, 'sábado': 6 };
+
+    if (dateLower.indexOf('manana') !== -1 || dateLower.indexOf('mañana') !== -1) {
+      target.setDate(target.getDate() + 1);
+    } else if (dateLower.indexOf('hoy') !== -1) {
+      // hoy = mismo dia
+    } else {
+      // buscar dia de la semana
+      var foundDay = -1;
+      Object.keys(dayMap).forEach(function(d) {
+        if (dateLower.indexOf(d) !== -1) foundDay = dayMap[d];
+      });
+      if (foundDay >= 0) {
+        var daysAhead = (foundDay - target.getDay() + 7) % 7;
+        if (daysAhead === 0) daysAhead = 7; // si es el mismo dia, asumir proxima semana
+        target.setDate(target.getDate() + daysAhead);
+      }
+    }
+
+    // Parse time - "9:00 AM", "9 AM", "3 PM", "9 de la manana"
+    var timeLower = timeStr.toLowerCase();
+    var hourMatch = timeLower.match(/(\d{1,2})(?::(\d{2}))?/);
+    if (!hourMatch) return null;
+    var hour = parseInt(hourMatch[1]);
+    var minute = hourMatch[2] ? parseInt(hourMatch[2]) : 0;
+
+    var isPM = timeLower.indexOf('pm') !== -1 || timeLower.indexOf('tarde') !== -1 || timeLower.indexOf('noche') !== -1;
+    var isAM = timeLower.indexOf('am') !== -1 || timeLower.indexOf('manana') !== -1 || timeLower.indexOf('mañana') !== -1;
+
+    if (isPM && hour < 12) hour += 12;
+    if (isAM && hour === 12) hour = 0;
+
+    target.setHours(hour, minute, 0, 0);
+    return target;
+  } catch(e) {
+    console.error('Error parsing date:', e.message);
+    return null;
+  }
+}
+
 
 const fs = require('fs');
 const path = require('path');
@@ -470,7 +605,26 @@ router.post('/webhook', async function(req, res) {
       
       clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
-      saveData(); // Persistir despues de cada respuesta
+      saveData();
+
+      // Detectar si Julia confirmo una cita y crearla en Google Calendar
+      var apptInfo = detectAppointmentConfirmation(reply, history);
+      if (apptInfo && apptInfo.date && apptInfo.time) {
+        console.log('Cita detectada:', JSON.stringify(apptInfo));
+        createCalendarEvent(doctor.key, apptInfo, phone).then(function(result) {
+          if (result) {
+            // Marcar en clientData que tiene cita
+            var cKey = doctor.key + '_' + phone;
+            var cd = clientData.get(cKey) || { phone: phone, doctor: doctor.key };
+            cd.hasAppointment = true;
+            cd.appointmentDate = apptInfo.date + ' ' + apptInfo.time;
+            cd.calendarEventId = result.id;
+            cd.calendarEventLink = result.htmlLink;
+            clientData.set(cKey, cd);
+            saveData();
+          }
+        });
+      }
       // Reiniciar timeout de sesion
       resetTimeout(convKey, phone, phoneId, token, doctor);
     }
@@ -575,6 +729,41 @@ router.options('/conversations', function(req, res) {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
   res.sendStatus(200);
+});
+
+router.get('/appointments', async function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctorKey = req.query.doctor || 'quiropedia';
+  var calendar = getCalendarForDoctor(doctorKey);
+  if (!calendar) return res.json({ appointments: [], error: 'Calendar no configurado' });
+
+  try {
+    var now = new Date();
+    var future = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);
+    var result = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: now.toISOString(),
+      timeMax: future.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+    });
+    var appts = (result.data.items || []).filter(function(e) {
+      return e.summary && e.summary.indexOf('Cita') !== -1;
+    }).map(function(e) {
+      return {
+        id: e.id,
+        summary: e.summary,
+        description: e.description,
+        start: e.start.dateTime,
+        end: e.end.dateTime,
+        link: e.htmlLink,
+      };
+    });
+    res.json({ appointments: appts, total: appts.length });
+  } catch(err) {
+    console.error('Error fetching appointments:', err.message);
+    res.json({ appointments: [], error: err.message });
+  }
 });
 
 router.get('/clients', function(req, res) {

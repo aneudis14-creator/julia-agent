@@ -4,10 +4,45 @@ const axios    = require('axios');
 const FormData = require('form-data');
 const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 
+const fs = require('fs');
+const path = require('path');
+const DATA_DIR = '/tmp/julia-data';
+const CONV_FILE = path.join(DATA_DIR, 'conversations.json');
+const CLIENTS_FILE = path.join(DATA_DIR, 'clients.json');
+
+if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+
 const conversations = new Map();
 const MAX_HISTORY   = 10;
-const imageStore    = new Map(); // Guarda imagenes por conversacion
-const clientData    = new Map(); // Guarda datos del cliente por convKey
+const imageStore    = new Map();
+const clientData    = new Map();
+
+// Cargar datos guardados al iniciar
+try {
+  if (fs.existsSync(CONV_FILE)) {
+    var savedConvs = JSON.parse(fs.readFileSync(CONV_FILE, 'utf8'));
+    Object.keys(savedConvs).forEach(function(k) { conversations.set(k, savedConvs[k]); });
+    console.log('Cargadas ' + conversations.size + ' conversaciones de disco');
+  }
+  if (fs.existsSync(CLIENTS_FILE)) {
+    var savedClients = JSON.parse(fs.readFileSync(CLIENTS_FILE, 'utf8'));
+    Object.keys(savedClients).forEach(function(k) { clientData.set(k, savedClients[k]); });
+    console.log('Cargados ' + clientData.size + ' clientes de disco');
+  }
+} catch(e) { console.error('Error cargando datos:', e.message); }
+
+// Guardar cada cierto tiempo
+function saveData() {
+  try {
+    var convObj = {};
+    conversations.forEach(function(v, k) { convObj[k] = v; });
+    fs.writeFileSync(CONV_FILE, JSON.stringify(convObj));
+    var clientObj = {};
+    clientData.forEach(function(v, k) { clientObj[k] = v; });
+    fs.writeFileSync(CLIENTS_FILE, JSON.stringify(clientObj));
+  } catch(e) { console.error('Error guardando datos:', e.message); }
+}
+setInterval(saveData, 30000); // Guardar cada 30 segundos
 const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
 const timeoutChecks = new Map(); // timers activos por conversacion
 
@@ -22,7 +57,7 @@ function getDoctorByPhoneId(phoneId) {
       especialidad: 'Quiropodologia - Salud de los pies',
       whatsapp_directo: '809-425-2314',
       emergencias: '809-425-2314',
-      clinicas: [{ nombre: 'Quiropedia RD', direccion: 'Plaza La Marquesa I, Local 81, 2do piso, Ciudad Juan Bosch', referencia: 'Arriba de Farmacia Carol', dias: 'Lunes a Sabado', horario: '9:00 AM - 5:30 PM', sistema: 'Con cita previa' }],
+      clinicas: [{ nombre: 'Quiropedia RD', direccion: 'Plaza La Marquesa 1, Local 81, Ciudad Juan Bosch, Santo Domingo Este', referencia: 'Arriba de Farmacia Carol', dias: 'Lunes a Sabado', horario: '9:00 AM - 5:30 PM', sistema: 'Con cita previa' }],
       precios: { evaluacion: 'RD$500', pedicure_clinico: 'RD$2,000', quiropedia_basica: 'RD$3,700', quiropedia_avanzada: 'RD$4,700', pago: 'Efectivo, tarjeta debito/credito, transferencia' },
       seguros: 'No acepta seguros - solo pago directo',
       servicios: 'Evaluacion inicial RD$500, Pedicure clinico RD$2000, Eliminacion de callos RD$1000, Verruga plantar RD$1000, Tina pedis RD$1000, Quiropedia basica RD$3700, Quiropedia avanzada RD$4700, Extraccion de laterales sin granuloma RD$2500, Extraccion con granuloma RD$3000, Pedicure antifungico menos 4 dedos RD$1200, Pedicure antifungico mas 5 dedos RD$1800, Fresado RD$4000, Primera cura RD$500, Seguimientos RD$1000, Pedicura pie sano RD$900, Manicura hombre RD$650, Manicura mujer RD$450, Manicure antifungico RD$1000, Retiro gel RD$200, Retiro acrilico RD$200, Pintura en gel RD$500',
@@ -39,9 +74,9 @@ function getDoctorByPhoneId(phoneId) {
       tono: 'cercano',
       location: {
         name: 'Quiropedia RD',
-        address: 'Plaza La Marquesa I, Local 81, 2do piso, Ciudad Juan Bosch, Santo Domingo Este. Arriba de Farmacia Carol.',
-        lat: 18.4901,
-        lng: -69.8132
+        address: 'Plaza La Marquesa 1, Local 81, Ciudad Juan Bosch, Santo Domingo Este. Arriba de Farmacia Carol.',
+        lat: 18.4948,
+        lng: -69.7468
       },
     };
   }
@@ -435,6 +470,7 @@ router.post('/webhook', async function(req, res) {
       
       clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
+      saveData(); // Persistir despues de cada respuesta
       // Reiniciar timeout de sesion
       resetTimeout(convKey, phone, phoneId, token, doctor);
     }
@@ -539,6 +575,25 @@ router.options('/conversations', function(req, res) {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
   res.sendStatus(200);
+});
+
+router.get('/clients', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var clientsList = [];
+  clientData.forEach(function(data, key) {
+    var conv = conversations.get(key) || [];
+    clientsList.push({
+      id: key,
+      name: data.name || null,
+      phone: data.phone || key.split('_').slice(1).join('_'),
+      doctor: data.doctor || key.split('_')[0],
+      firstSeen: data.firstSeen || null,
+      lastSeen: lastActivity_map.get(key) || null,
+      msgCount: conv.length,
+      hasAppointment: data.hasAppointment || false,
+    });
+  });
+  res.json({ clients: clientsList, total: clientsList.length });
 });
 
 router.get('/status', function(req, res) {

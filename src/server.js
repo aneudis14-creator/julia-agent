@@ -198,9 +198,11 @@ app.get('/setup/agent-config', (_req, res) => res.json({
 
 // WHATSAPP
 const whatsappRouter = require('./routes/whatsapp');
+const calendarAuth = require('./routes/calendar-auth');
 const authRouter = require('./routes/auth');
 const { startReminderSystem } = require('./routes/reminders');
 app.use('/whatsapp', whatsappRouter);
+app.use('/calendar-auth', calendarAuth.router);
 app.use('/auth', authRouter);
 
 // ARRANCAR — pre-cargar agenda antes de aceptar llamadas

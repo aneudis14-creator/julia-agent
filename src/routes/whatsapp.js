@@ -144,6 +144,7 @@ const path = require('path');
 const DATA_DIR = '/tmp/julia-data';
 const CONV_FILE = path.join(DATA_DIR, 'conversations.json');
 const CLIENTS_FILE = path.join(DATA_DIR, 'clients.json');
+const ARCHIVE_FILE = path.join(DATA_DIR, 'archive.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
@@ -151,6 +152,7 @@ const conversations = new Map();
 const MAX_HISTORY   = 10;
 const imageStore    = new Map();
 const clientData    = new Map();
+const archivedConvs = new Map(); // Conversaciones cerradas pero guardadas
 
 // Cargar datos guardados al iniciar
 try {
@@ -164,6 +166,11 @@ try {
     Object.keys(savedClients).forEach(function(k) { clientData.set(k, savedClients[k]); });
     console.log('Cargados ' + clientData.size + ' clientes de disco');
   }
+  if (fs.existsSync(ARCHIVE_FILE)) {
+    var savedArchive = JSON.parse(fs.readFileSync(ARCHIVE_FILE, 'utf8'));
+    Object.keys(savedArchive).forEach(function(k) { archivedConvs.set(k, savedArchive[k]); });
+    console.log('Cargadas ' + archivedConvs.size + ' conversaciones archivadas');
+  }
 } catch(e) { console.error('Error cargando datos:', e.message); }
 
 // Guardar cada cierto tiempo
@@ -175,6 +182,9 @@ function saveData() {
     var clientObj = {};
     clientData.forEach(function(v, k) { clientObj[k] = v; });
     fs.writeFileSync(CLIENTS_FILE, JSON.stringify(clientObj));
+    var archiveObj = {};
+    archivedConvs.forEach(function(v, k) { archiveObj[k] = v; });
+    fs.writeFileSync(ARCHIVE_FILE, JSON.stringify(archiveObj));
   } catch(e) { console.error('Error guardando datos:', e.message); }
 }
 setInterval(saveData, 30000); // Guardar cada 30 segundos
@@ -429,18 +439,29 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
       // No enviar mensaje de cierre si Julia ya se despidio - solo limpiar
       var hist = conversations.get(convKey);
       if (juliaAlreadyClosed(hist)) {
+        // Archivar antes de borrar
+        if (hist && hist.length > 0) {
+          archivedConvs.set(convKey, { history: hist, closedAt: Date.now() });
+        }
         conversations.delete(convKey);
         lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);
-        console.log('Sesion cerrada limpiamente: ' + phone);
+        saveData();
+        console.log('Sesion cerrada y archivada: ' + phone);
         return;
       }
       try {
         await sendMeta(phone, 'Cerre nuestra conversacion por inactividad. Cuando quieras retomar escribeme y con gusto te ayudo.', phoneId, token);
+        // Archivar antes de borrar
+        var hist2 = conversations.get(convKey);
+        if (hist2 && hist2.length > 0) {
+          archivedConvs.set(convKey, { history: hist2, closedAt: Date.now() });
+        }
         conversations.delete(convKey);
         lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);
-        console.log('Sesion cerrada por inactividad: ' + phone);
+        saveData();
+        console.log('Sesion cerrada por inactividad y archivada: ' + phone);
       } catch(e) {}
     }
   }, TIMEOUT_CLOSE);
@@ -673,12 +694,20 @@ router.get('/conversations', function(req, res) {
   res.header('Access-Control-Allow-Origin', '*');
   res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
   var convList = [];
-  conversations.forEach(function(history, key) {
+  // Combinar conversaciones activas y archivadas
+  var allConvs = new Map();
+  conversations.forEach(function(h, k) { allConvs.set(k, { history: h, isActive: true }); });
+  archivedConvs.forEach(function(v, k) {
+    if (!allConvs.has(k)) allConvs.set(k, { history: v.history, isActive: false, closedAt: v.closedAt });
+  });
+
+  allConvs.forEach(function(data, key) {
+    var history = data.history;
     var parts = key.split('_');
     var doctorKey = parts[0];
     var phone = parts.slice(1).join('_');
     var lastMsg = history.length > 0 ? history[history.length-1] : null;
-    var lastActivity = lastActivity_map.get(key) || null;
+    var lastActivity = lastActivity_map.get(key) || data.closedAt || null;
     var cData = clientData.get(key) || {};
     var mappedMessages = history.map(function(m) {
       if (m._imageData) {

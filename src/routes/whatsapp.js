@@ -247,7 +247,7 @@ function parseAppointmentDate(dateStr, timeStr) {
 
 const fs = require('fs');
 const path = require('path');
-const DATA_DIR = '/tmp/julia-data';
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
 const CONV_FILE = path.join(DATA_DIR, 'conversations.json');
 const CLIENTS_FILE = path.join(DATA_DIR, 'clients.json');
 const ARCHIVE_FILE = path.join(DATA_DIR, 'archive.json');

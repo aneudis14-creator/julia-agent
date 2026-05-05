@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const { google } = require('googleapis');
 
-const DATA_DIR = '/tmp/julia-data';
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
 const TOKENS_FILE = path.join(DATA_DIR, 'google-tokens.json');
 
 if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });

@@ -92,9 +92,11 @@ function detectAppointmentConfirmation(text, conversationHistory) {
 
 // Formatea fecha como ISO local SIN convertir a UTC
 function formatLocalISO(date) {
+  // Construye ISO con offset explicito de Santo Domingo (-04:00)
+  // Esto fuerza a Google a interpretar la hora correctamente sin importar la zona del calendario
   var pad = function(n) { return n < 10 ? '0' + n : n; };
   return date.getFullYear() + '-' + pad(date.getMonth()+1) + '-' + pad(date.getDate()) +
-         'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':00';
+         'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':00-04:00';
 }
 
 async function createCalendarEvent(doctorKey, info, phone) {

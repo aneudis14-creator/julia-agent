@@ -297,8 +297,8 @@ setInterval(saveData, 30000); // Guardar cada 30 segundos
 const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
 const timeoutChecks = new Map(); // timers activos por conversacion
 
-const TIMEOUT_WARN  = 5 * 60 * 1000;  // 5 minutos -> pregunta si sigue ahi
-const TIMEOUT_CLOSE = 10 * 60 * 1000; // 10 minutos -> cierra sesion
+const TIMEOUT_WARN  = 30 * 60 * 1000;  // 30 minutos -> pregunta si sigue ahi
+const TIMEOUT_CLOSE = 60 * 60 * 1000;  // 60 minutos -> archiva sesion
 
 function getDoctorByPhoneId(phoneId) {
   if (phoneId === process.env.META_PHONE_ID_QUIROPEDIA) {
@@ -545,29 +545,25 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
       // No enviar mensaje de cierre si Julia ya se despidio - solo limpiar
       var hist = conversations.get(convKey);
       if (juliaAlreadyClosed(hist)) {
-        // Archivar antes de borrar
+        // Solo archivar, NO borrar - las conversaciones se mantienen visibles siempre
         if (hist && hist.length > 0) {
           archivedConvs.set(convKey, { history: hist, closedAt: Date.now() });
+          saveData();
+          console.log('Sesion archivada (conversacion permanece visible): ' + phone);
         }
-        conversations.delete(convKey);
-        lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);
-        saveData();
-        console.log('Sesion cerrada y archivada: ' + phone);
         return;
       }
       try {
         await sendMeta(phone, 'Cerre nuestra conversacion por inactividad. Cuando quieras retomar escribeme y con gusto te ayudo.', phoneId, token);
-        // Archivar antes de borrar
+        // Solo archivar, NO borrar - las conversaciones se mantienen visibles
         var hist2 = conversations.get(convKey);
         if (hist2 && hist2.length > 0) {
           archivedConvs.set(convKey, { history: hist2, closedAt: Date.now() });
+          saveData();
         }
-        conversations.delete(convKey);
-        lastActivity_map.delete(convKey);
         timeoutChecks.delete(convKey);
-        saveData();
-        console.log('Sesion cerrada por inactividad y archivada: ' + phone);
+        console.log('Sesion archivada por inactividad: ' + phone);
       } catch(e) {}
     }
   }, TIMEOUT_CLOSE);

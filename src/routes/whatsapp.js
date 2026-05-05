@@ -685,12 +685,9 @@ router.post('/webhook', async function(req, res) {
       }
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
-    var askingLocation = false;
-    if (msgType === 'text') {
-      askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
-    }
-    
-    if (msgType === 'text') {
+    } else if (msgType === 'text') {
+      // Detectar si piden ubicacion/direccion/como llegar
+      var askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
       
       if (askingLocation && doctor.location) {
         // Enviar texto primero
@@ -763,6 +760,14 @@ router.post('/webhook', async function(req, res) {
       clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
       saveData();
+
+      // Enviar ubicacion proactivamente si Julia menciono la direccion
+      if (juliaMentionsAddress(reply) && doctor.location) {
+        try {
+          await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
+          console.log('Ubicacion enviada proactivamente a ' + phone);
+        } catch(e) { console.error('Error enviando ubicacion proactiva:', e.message); }
+      }
 
       // Detectar si Julia confirmo una cita y crearla en Google Calendar
       var apptInfo = detectAppointmentConfirmation(reply, history);

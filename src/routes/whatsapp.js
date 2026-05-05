@@ -24,6 +24,12 @@ function getCalendarForDoctor(doctorKey) {
 }
 
 // Detectar si Julia confirmo una cita en su respuesta
+function juliaMentionsAddress(text) {
+  if (!text) return false;
+  // Detectar cuando Julia menciona la direccion del local
+  return /plaza la marquesa|local 81|ciudad juan bosch|farmacia carol|le esperamos en/i.test(text);
+}
+
 function detectAppointmentConfirmation(text, conversationHistory) {
   if (!text) return null;
   
@@ -679,9 +685,12 @@ router.post('/webhook', async function(req, res) {
       }
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
-    } else if (msgType === 'text') {
-      // Detectar si piden ubicacion/direccion/como llegar
-      var askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
+    var askingLocation = false;
+    if (msgType === 'text') {
+      askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
+    }
+    
+    if (msgType === 'text') {
       
       if (askingLocation && doctor.location) {
         // Enviar texto primero

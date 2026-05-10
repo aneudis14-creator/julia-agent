@@ -405,17 +405,19 @@ async function askClaude(history, doctor) {
 // ── ELEVENLABS - Generar voz natural ──────────────────────────────
 async function generateVoice(text, voiceId) {
   if (!process.env.ELEVENLABS_API_KEY) {
-    console.log('[Voice] ElevenLabs API key no configurada');
+    console.log('[Voice] ElevenLabs API key no configurada en env');
     return null;
   }
   
-  // Voz por defecto (Sofia - latina natural)
+  // Voz por defecto (Sarah - femenina natural)
   voiceId = voiceId || process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL';
   
+  console.log('[Voice] Generando audio con ElevenLabs, voiceId:', voiceId);
+  console.log('[Voice] Texto a convertir:', text.substring(0, 100));
+  
   try {
-    console.log('[Voice] Generando audio con ElevenLabs...');
     var response = await axios.post(
-      'https://api.elevenlabs.io/v1/text-to-speech/' + voiceId,
+      'https://api.elevenlabs.io/v1/text-to-speech/' + voiceId + '?output_format=mp3_22050_32',
       {
         text: text,
         model_id: 'eleven_multilingual_v2',
@@ -432,13 +434,26 @@ async function generateVoice(text, voiceId) {
           'Content-Type': 'application/json',
           'Accept': 'audio/mpeg'
         },
-        responseType: 'arraybuffer'
+        responseType: 'arraybuffer',
+        timeout: 30000
       }
     );
-    console.log('[Voice] Audio generado, ' + response.data.byteLength + ' bytes');
+    console.log('[Voice] OK - Audio generado, tamano:', response.data.byteLength, 'bytes');
     return Buffer.from(response.data);
   } catch(err) {
-    console.error('[Voice] Error generando audio:', err.message);
+    console.error('[Voice] ERROR ElevenLabs:');
+    if (err.response) {
+      console.error('[Voice] Status:', err.response.status);
+      // Convertir el ArrayBuffer del error a texto si es posible
+      try {
+        var errText = Buffer.from(err.response.data).toString('utf8');
+        console.error('[Voice] Error data:', errText);
+      } catch(e) {
+        console.error('[Voice] Data binaria, status:', err.response.status);
+      }
+    } else {
+      console.error('[Voice] Error msg:', err.message);
+    }
     return null;
   }
 }
@@ -446,40 +461,63 @@ async function generateVoice(text, voiceId) {
 // ── Subir audio a WhatsApp Media y enviar ──────────────────────────
 async function sendVoiceMessage(to, audioBuffer, phoneId, token) {
   try {
-    // 1. Subir audio a WhatsApp Media
+    console.log('[Voice] Iniciando envio de audio, tamano:', audioBuffer.length, 'bytes');
+    
+    // 1. Subir audio a WhatsApp Media como MP3
     var formData = new FormData();
+    formData.append('messaging_product', 'whatsapp');
     formData.append('file', audioBuffer, { 
       filename: 'voice.mp3', 
       contentType: 'audio/mpeg' 
     });
-    formData.append('messaging_product', 'whatsapp');
     formData.append('type', 'audio/mpeg');
     
+    console.log('[Voice] Subiendo a Meta Media API...');
     var uploadRes = await axios.post(
       'https://graph.facebook.com/v20.0/' + phoneId + '/media',
       formData,
-      { headers: { ...formData.getHeaders(), 'Authorization': 'Bearer ' + token } }
+      { 
+        headers: { 
+          ...formData.getHeaders(), 
+          'Authorization': 'Bearer ' + token 
+        },
+        maxContentLength: Infinity,
+        maxBodyLength: Infinity
+      }
     );
     
     var mediaId = uploadRes.data.id;
-    console.log('[Voice] Audio subido a Meta, mediaId:', mediaId);
+    console.log('[Voice] OK - Audio subido a Meta, mediaId:', mediaId);
     
-    // 2. Enviar como mensaje de audio
-    await axios.post(
+    // 2. Enviar como mensaje de audio (voice = true para que aparezca como nota de voz)
+    console.log('[Voice] Enviando mensaje de audio...');
+    var sendRes = await axios.post(
       'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
       {
         messaging_product: 'whatsapp',
-        to: to,
+        recipient_type: 'individual',
+        to: to.replace(/\D/g, ''),
         type: 'audio',
         audio: { id: mediaId }
       },
-      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+      { 
+        headers: { 
+          'Authorization': 'Bearer ' + token, 
+          'Content-Type': 'application/json' 
+        }
+      }
     );
     
-    console.log('[Voice] Audio enviado a ' + to);
+    console.log('[Voice] OK - Audio enviado a ' + to, 'response:', JSON.stringify(sendRes.data));
     return true;
   } catch(err) {
-    console.error('[Voice] Error enviando audio:', err.response ? err.response.data : err.message);
+    console.error('[Voice] ERROR enviando audio:');
+    if (err.response) {
+      console.error('[Voice] Status:', err.response.status);
+      console.error('[Voice] Data:', JSON.stringify(err.response.data));
+    } else {
+      console.error('[Voice] Mensaje:', err.message);
+    }
     return false;
   }
 }

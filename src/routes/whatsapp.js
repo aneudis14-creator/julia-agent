@@ -389,6 +389,7 @@ async function askClaude(history, doctor) {
   var res = await axios.post('https://api.anthropic.com/v1/messages', {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 400,
+    temperature: 0.85,
     system: buildSystemPrompt(doctor),
     messages: cleanMessages,
   }, {
@@ -399,6 +400,88 @@ async function askClaude(history, doctor) {
     }
   });
   return res.data.content[0].text;
+}
+
+// ── ELEVENLABS - Generar voz natural ──────────────────────────────
+async function generateVoice(text, voiceId) {
+  if (!process.env.ELEVENLABS_API_KEY) {
+    console.log('[Voice] ElevenLabs API key no configurada');
+    return null;
+  }
+  
+  // Voz por defecto (Sofia - latina natural)
+  voiceId = voiceId || process.env.ELEVENLABS_VOICE_ID || 'EXAVITQu4vr4xnSDxMaL';
+  
+  try {
+    console.log('[Voice] Generando audio con ElevenLabs...');
+    var response = await axios.post(
+      'https://api.elevenlabs.io/v1/text-to-speech/' + voiceId,
+      {
+        text: text,
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75,
+          style: 0.3,
+          use_speaker_boost: true
+        }
+      },
+      {
+        headers: {
+          'xi-api-key': process.env.ELEVENLABS_API_KEY,
+          'Content-Type': 'application/json',
+          'Accept': 'audio/mpeg'
+        },
+        responseType: 'arraybuffer'
+      }
+    );
+    console.log('[Voice] Audio generado, ' + response.data.byteLength + ' bytes');
+    return Buffer.from(response.data);
+  } catch(err) {
+    console.error('[Voice] Error generando audio:', err.message);
+    return null;
+  }
+}
+
+// ── Subir audio a WhatsApp Media y enviar ──────────────────────────
+async function sendVoiceMessage(to, audioBuffer, phoneId, token) {
+  try {
+    // 1. Subir audio a WhatsApp Media
+    var formData = new FormData();
+    formData.append('file', audioBuffer, { 
+      filename: 'voice.mp3', 
+      contentType: 'audio/mpeg' 
+    });
+    formData.append('messaging_product', 'whatsapp');
+    formData.append('type', 'audio/mpeg');
+    
+    var uploadRes = await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/media',
+      formData,
+      { headers: { ...formData.getHeaders(), 'Authorization': 'Bearer ' + token } }
+    );
+    
+    var mediaId = uploadRes.data.id;
+    console.log('[Voice] Audio subido a Meta, mediaId:', mediaId);
+    
+    // 2. Enviar como mensaje de audio
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      {
+        messaging_product: 'whatsapp',
+        to: to,
+        type: 'audio',
+        audio: { id: mediaId }
+      },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+    );
+    
+    console.log('[Voice] Audio enviado a ' + to);
+    return true;
+  } catch(err) {
+    console.error('[Voice] Error enviando audio:', err.response ? err.response.data : err.message);
+    return false;
+  }
 }
 
 async function transcribeAudio(mediaId, token) {
@@ -433,8 +516,24 @@ async function transcribeAudio(mediaId, token) {
   }
 }
 
+// Simular tiempo de "escritura" humano realista
+async function humanDelay(text) {
+  if (!text) return;
+  // Humanos escriben ~40 palabras por minuto = ~3 caracteres por segundo
+  // Pero en moviles es mas rapido: ~5-7 caracteres por segundo
+  var charCount = text.length;
+  var baseDelay = Math.min(charCount * 30, 3500); // max 3.5 segundos
+  // Agregar variacion aleatoria (+/- 20%) para naturalidad
+  var variation = (Math.random() * 0.4 - 0.2) * baseDelay;
+  var totalDelay = Math.max(800, baseDelay + variation); // minimo 0.8s
+  return new Promise(function(resolve) { setTimeout(resolve, totalDelay); });
+}
+
 async function sendMeta(to, body, phoneId, token) {
   try {
+    // Simular tiempo de escritura humano antes de enviar
+    await humanDelay(body);
+    
     await axios.post(
       'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
       {
@@ -660,6 +759,7 @@ router.post('/webhook', async function(req, res) {
         var claudeRes = await axios.post('https://api.anthropic.com/v1/messages', {
           model: 'claude-sonnet-4-20250514',
           max_tokens: 400,
+          temperature: 0.85,
           system: buildSystemPrompt(doctor),
           messages: visionMessages,
         }, {
@@ -760,6 +860,17 @@ router.post('/webhook', async function(req, res) {
       clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
       saveData();
+
+      // Si el paciente envio nota de voz, responder TAMBIEN con voz
+      if (wasVoiceMessage && reply && process.env.ELEVENLABS_API_KEY) {
+        try {
+          var audioBuffer = await generateVoice(reply);
+          if (audioBuffer) {
+            await sendVoiceMessage(phone, audioBuffer, phoneId, token);
+            console.log('[Voice] Julia respondio con audio a ' + phone);
+          }
+        } catch(e) { console.error('[Voice] Error respuesta voz:', e.message); }
+      }
 
       // Enviar ubicacion proactivamente si Julia menciono la direccion
       if (juliaMentionsAddress(reply) && doctor.location) {

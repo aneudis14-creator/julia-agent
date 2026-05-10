@@ -719,6 +719,8 @@ router.post('/webhook', async function(req, res) {
 
     var reply;
 
+    var wasVoiceMessage = (msgType === 'audio');
+    
     if (msgType === 'audio') {
       await sendMeta(phone, 'Un momentico, estoy escuchando tu nota de voz...', phoneId, token);
       var mediaId = message.audio && message.audio.id;

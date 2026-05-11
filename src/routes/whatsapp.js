@@ -5,6 +5,10 @@ const FormData = require('form-data');
 const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 const { google } = require('googleapis');
 
+// ── LOG DE CONFIGURACION AL INICIAR ──────────────────────
+console.log('[Config] ElevenLabs API Key:', process.env.ELEVENLABS_API_KEY ? 'CONFIGURADA (' + process.env.ELEVENLABS_API_KEY.substring(0, 10) + '...)' : 'NO CONFIGURADA');
+console.log('[Config] ElevenLabs Voice ID:', process.env.ELEVENLABS_VOICE_ID || 'NO CONFIGURADA (usara default)');
+
 // ── GOOGLE CALENDAR HELPERS ──────────────────────────────
 function getCalendarForDoctor(doctorKey) {
   var refreshToken = null;
@@ -901,13 +905,23 @@ router.post('/webhook', async function(req, res) {
       console.log('Julia respondio a ' + phone);
       saveData();
 
-      // Si el paciente envio nota de voz, responder TAMBIEN con voz
+      // Si el paciente envio nota de voz, INTENTAR responder tambien con voz
+      // Si falla, no pasa nada - el texto ya se envio arriba
       if (wasVoiceMessage && reply && process.env.ELEVENLABS_API_KEY) {
+        console.log('[Voice] Paciente envio audio, intentando responder con voz tambien');
         try {
-          var audioBuffer = await generateVoice(reply);
-          if (audioBuffer) {
-            await sendVoiceMessage(phone, audioBuffer, phoneId, token);
-            console.log('[Voice] Julia respondio con audio a ' + phone);
+          // Limpiar reply para audio (quitar emojis y caracteres extranos)
+          var voiceText = reply.replace(/[\u{1F300}-\u{1F9FF}]/gu, '').replace(/[\u{2600}-\u{26FF}]/gu, '').trim();
+          if (voiceText.length === 0) voiceText = reply;
+          
+          var audioBuffer = await generateVoice(voiceText);
+          if (audioBuffer && audioBuffer.length > 0) {
+            var voiceSent = await sendVoiceMessage(phone, audioBuffer, phoneId, token);
+            if (voiceSent) {
+              console.log('[Voice] OK Julia respondio con audio a ' + phone);
+            } else {
+              console.log('[Voice] FAIL envio fallo, ya se envio el texto');
+            }
           }
         } catch(e) { console.error('[Voice] Error respuesta voz:', e.message); }
       }

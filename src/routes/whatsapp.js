@@ -2,12 +2,22 @@ const express  = require('express');
 const router   = express.Router();
 const axios    = require('axios');
 const FormData = require('form-data');
+const fs       = require('fs');
+const path     = require('path');
 const { getDoctorByKey, buildSystemPrompt } = require('./doctors');
 const { google } = require('googleapis');
 
 // ── LOG DE CONFIGURACION AL INICIAR ──────────────────────
 console.log('[Config] ElevenLabs API Key:', process.env.ELEVENLABS_API_KEY ? 'CONFIGURADA (' + process.env.ELEVENLABS_API_KEY.substring(0, 10) + '...)' : 'NO CONFIGURADA');
 console.log('[Config] ElevenLabs Voice ID:', process.env.ELEVENLABS_VOICE_ID || 'NO CONFIGURADA (usara default)');
+
+// ── PATHS PERSISTENTES (DEBEN ESTAR ARRIBA - usados por todo) ──
+const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
+const TOKENS_FILE = path.join(DATA_DIR, 'google-tokens.json');
+const NOTES_FILE = path.join(DATA_DIR, 'patient-notes.json');
+if (!fs.existsSync(DATA_DIR)) {
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e) {}
+}
 
 // ── BUSCAR CITAS DEL PACIENTE EN CALENDAR ────────────────
 async function getPatientAppointments(doctorKey, phone) {
@@ -331,14 +341,10 @@ function parseAppointmentDate(dateStr, timeStr) {
 }
 
 
-const fs = require('fs');
-const path = require('path');
-const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
 const CONV_FILE = path.join(DATA_DIR, 'conversations.json');
 const CLIENTS_FILE = path.join(DATA_DIR, 'clients.json');
 const ARCHIVE_FILE = path.join(DATA_DIR, 'archive.json');
 
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
 
 const conversations = new Map();
 const MAX_HISTORY   = 10;
@@ -461,7 +467,7 @@ function getDoctorByPhoneId(phoneId) {
 }
 
 
-async function askClaude(history, doctor, patientAppts) {
+async function askClaude(history, doctor, patientAppts, patientNotes) {
   // Filtrar campos internos antes de enviar a Claude
   var cleanMessages = history.map(function(m) {
     return { role: m.role, content: m.content };
@@ -469,6 +475,24 @@ async function askClaude(history, doctor, patientAppts) {
   
   // Construir prompt del sistema con info del paciente
   var systemPrompt = buildSystemPrompt(doctor);
+  
+  // Si hay notas/historial medico del paciente, agregarlo PRIMERO (mas importante)
+  if (patientNotes) {
+    var notesInfo = "\n\n══════════════════════════════════════════════════\n";
+    notesInfo += "INFORMACION REGISTRADA DEL PACIENTE (notas del centro):\n";
+    notesInfo += "══════════════════════════════════════════════════\n";
+    if (patientNotes.treatment) {
+      notesInfo += "TRATAMIENTOS REALIZADOS:\n" + patientNotes.treatment + "\n\n";
+    }
+    if (patientNotes.notes) {
+      notesInfo += "NOTAS DEL CENTRO:\n" + patientNotes.notes + "\n\n";
+    }
+    if (patientNotes.nextFollowUp) {
+      notesInfo += "PROXIMO SEGUIMIENTO PROGRAMADO: " + patientNotes.nextFollowUp + "\n";
+    }
+    notesInfo += "\nUSA ESTA INFORMACION para contextualizar tus respuestas. Reconoce al paciente como cliente existente, menciona sus tratamientos pasados de forma natural cuando sea relevante. NO inventes informacion que no este aqui. Si el paciente pregunta por algo no registrado, di que verificara con el especialista.\n";
+    systemPrompt += notesInfo;
+  }
   
   // Si tenemos historial del paciente, agregarlo al contexto
   if (patientAppts && patientAppts.hasHistory) {
@@ -819,6 +843,102 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
   timeoutChecks.set(convKey, { warn: warnTimer, close: closeTimer });
 }
 
+// ══════════════════════════════════════════════════════════════
+//  SISTEMA DE NOTAS DEL PACIENTE - Historial medico personalizado
+// ══════════════════════════════════════════════════════════════
+
+function loadPatientNotes() {
+  try {
+    if (fs.existsSync(NOTES_FILE)) {
+      return JSON.parse(fs.readFileSync(NOTES_FILE, 'utf8'));
+    }
+  } catch(e) { console.error('[Notes] Error leyendo:', e.message); }
+  return {};
+}
+
+function savePatientNotes(notes) {
+  try {
+    fs.writeFileSync(NOTES_FILE, JSON.stringify(notes, null, 2));
+    return true;
+  } catch(e) { 
+    console.error('[Notes] Error guardando:', e.message); 
+    return false;
+  }
+}
+
+// Normaliza telefono para key (quita + y espacios)
+function phoneKey(phone) {
+  return String(phone).replace(/[^0-9]/g, '');
+}
+
+// Obtener notas de un paciente especifico
+function getPatientNotes(doctorKey, phone) {
+  var all = loadPatientNotes();
+  var key = doctorKey + '_' + phoneKey(phone);
+  return all[key] || null;
+}
+
+// Guardar/actualizar notas de un paciente
+function setPatientNotes(doctorKey, phone, data) {
+  var all = loadPatientNotes();
+  var key = doctorKey + '_' + phoneKey(phone);
+  all[key] = {
+    doctor: doctorKey,
+    phone: phone,
+    notes: data.notes || '',
+    treatment: data.treatment || '',
+    nextFollowUp: data.nextFollowUp || '',
+    updatedAt: new Date().toISOString()
+  };
+  return savePatientNotes(all) ? all[key] : null;
+}
+
+// ENDPOINTS PARA NOTAS
+// GET /whatsapp/patient-notes?doctor=quiropedia&phone=18091234567
+router.get('/patient-notes', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctor = req.query.doctor || 'quiropedia';
+  var phone = req.query.phone || '';
+  if (!phone) return res.json({ notes: null });
+  var notes = getPatientNotes(doctor, phone);
+  res.json({ notes: notes });
+});
+
+// POST /whatsapp/patient-notes
+router.post('/patient-notes', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctor = req.body.doctor || 'quiropedia';
+  var phone = req.body.phone || '';
+  if (!phone) return res.status(400).json({ error: 'phone requerido' });
+  
+  var saved = setPatientNotes(doctor, phone, {
+    notes: req.body.notes || '',
+    treatment: req.body.treatment || '',
+    nextFollowUp: req.body.nextFollowUp || ''
+  });
+  
+  if (saved) {
+    console.log('[Notes] Guardadas para ' + doctor + ' / ' + phone);
+    res.json({ ok: true, notes: saved });
+  } else {
+    res.status(500).json({ error: 'Error al guardar' });
+  }
+});
+
+// GET /whatsapp/all-notes - Listar todas las notas (para dashboard)
+router.get('/all-notes', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctor = req.query.doctor || 'quiropedia';
+  var all = loadPatientNotes();
+  var filtered = {};
+  Object.keys(all).forEach(function(key) {
+    if (all[key].doctor === doctor) {
+      filtered[key] = all[key];
+    }
+  });
+  res.json({ notes: filtered });
+});
+
 router.get('/webhook', function(req, res) {
   var mode      = req.query['hub.mode'];
   var token     = req.query['hub.verify_token'];
@@ -873,8 +993,9 @@ router.post('/webhook', async function(req, res) {
         history.push({ role: 'user', content: '[Nota de voz]: ' + transcripcion });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
-        var patientAppts = await getPatientAppointments(doctorKey, phone);
-        reply = await askClaude(history, doctor, patientAppts);
+        var patientAppts = await getPatientAppointments(doctor.key, phone);
+        var patientNotes = getPatientNotes(doctor.key, phone);
+        reply = await askClaude(history, doctor, patientAppts, patientNotes);
       } else {
         reply = 'Disculpe, no pude escuchar bien su nota de voz. Puede escribirme su consulta.';
       }
@@ -929,8 +1050,9 @@ router.post('/webhook', async function(req, res) {
         console.error('Error procesando imagen:', imgErr.message);
         history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
         // Buscar historial de citas del paciente
-        var patientAppts = await getPatientAppointments(doctorKey, phone);
-        reply = await askClaude(history, doctor, patientAppts);
+        var patientAppts = await getPatientAppointments(doctor.key, phone);
+        var patientNotes = getPatientNotes(doctor.key, phone);
+        reply = await askClaude(history, doctor, patientAppts, patientNotes);
       }
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
@@ -943,8 +1065,9 @@ router.post('/webhook', async function(req, res) {
         history.push({ role: 'user', content: msgText });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
-        var patientAppts = await getPatientAppointments(doctorKey, phone);
-        reply = await askClaude(history, doctor, patientAppts);
+        var patientAppts = await getPatientAppointments(doctor.key, phone);
+        var patientNotes = getPatientNotes(doctor.key, phone);
+        reply = await askClaude(history, doctor, patientAppts, patientNotes);
         history.push({ role: 'assistant', content: reply });
         await sendMeta(phone, reply, phoneId, token);
         // Luego enviar ubicacion
@@ -959,8 +1082,9 @@ router.post('/webhook', async function(req, res) {
         history.push({ role: 'user', content: msgText || 'Hola' });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
-        var patientAppts = await getPatientAppointments(doctorKey, phone);
-        reply = await askClaude(history, doctor, patientAppts);
+        var patientAppts = await getPatientAppointments(doctor.key, phone);
+        var patientNotes = getPatientNotes(doctor.key, phone);
+        reply = await askClaude(history, doctor, patientAppts, patientNotes);
       }
     } else {
       reply = 'Recibí su mensaje. En que le puedo ayudar?';

@@ -10,18 +10,39 @@ console.log('[Config] ElevenLabs API Key:', process.env.ELEVENLABS_API_KEY ? 'CO
 console.log('[Config] ElevenLabs Voice ID:', process.env.ELEVENLABS_VOICE_ID || 'NO CONFIGURADA (usara default)');
 
 // ── GOOGLE CALENDAR HELPERS ──────────────────────────────
-function getCalendarForDoctor(doctorKey) {
-  var refreshToken = null;
-  if (doctorKey === 'quiropedia') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_QUIROPEDIA;
-  else if (doctorKey === 'alcantara') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_ALCANTARA;
-  else if (doctorKey === 'batista') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_BATISTA;
+// Cargar tokens guardados por calendar-auth.js
+function getSavedRefreshToken(doctorKey) {
+  try {
+    if (fs.existsSync(TOKENS_FILE)) {
+      var data = JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+      if (data[doctorKey] && data[doctorKey].refresh_token) {
+        return data[doctorKey].refresh_token;
+      }
+    }
+  } catch(e) { console.error('[Calendar] Error leyendo tokens guardados:', e.message); }
+  return null;
+}
 
-  if (!refreshToken || refreshToken === 'pending') return null;
+function getCalendarForDoctor(doctorKey) {
+  // PRIORIDAD 1: Token guardado por OAuth (calendar-auth.js)
+  var refreshToken = getSavedRefreshToken(doctorKey);
+  
+  // PRIORIDAD 2: Variable de entorno (legacy)
+  if (!refreshToken) {
+    if (doctorKey === 'quiropedia') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_QUIROPEDIA;
+    else if (doctorKey === 'alcantara') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_ALCANTARA;
+    else if (doctorKey === 'batista') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_BATISTA;
+  }
+
+  if (!refreshToken || refreshToken === 'pending') {
+    console.log('[Calendar] No hay token para ' + doctorKey);
+    return null;
+  }
 
   var auth = new google.auth.OAuth2(
     process.env.GOOGLE_CLIENT_ID,
     process.env.GOOGLE_CLIENT_SECRET,
-    process.env.GOOGLE_REDIRECT_URI || 'https://julia-agent-production.up.railway.app/auth/google/callback'
+    process.env.GOOGLE_REDIRECT_URI || 'https://julia-agent-production.up.railway.app/calendar-auth/callback'
   );
   auth.setCredentials({ refresh_token: refreshToken });
   return google.calendar({ version: 'v3', auth: auth });
@@ -905,25 +926,10 @@ router.post('/webhook', async function(req, res) {
       console.log('Julia respondio a ' + phone);
       saveData();
 
-      // Si el paciente envio nota de voz, INTENTAR responder tambien con voz
-      // Si falla, no pasa nada - el texto ya se envio arriba
-      if (wasVoiceMessage && reply && process.env.ELEVENLABS_API_KEY) {
-        console.log('[Voice] Paciente envio audio, intentando responder con voz tambien');
-        try {
-          // Limpiar reply para audio (quitar emojis y caracteres extranos)
-          var voiceText = reply.replace(/[\u{1F300}-\u{1F9FF}]/gu, '').replace(/[\u{2600}-\u{26FF}]/gu, '').trim();
-          if (voiceText.length === 0) voiceText = reply;
-          
-          var audioBuffer = await generateVoice(voiceText);
-          if (audioBuffer && audioBuffer.length > 0) {
-            var voiceSent = await sendVoiceMessage(phone, audioBuffer, phoneId, token);
-            if (voiceSent) {
-              console.log('[Voice] OK Julia respondio con audio a ' + phone);
-            } else {
-              console.log('[Voice] FAIL envio fallo, ya se envio el texto');
-            }
-          }
-        } catch(e) { console.error('[Voice] Error respuesta voz:', e.message); }
+      // VOZ DESACTIVADA TEMPORALMENTE - solo responde texto por ahora
+      // Cuando arreglemos ElevenLabs reactivamos
+      if (wasVoiceMessage) {
+        console.log('[Voice] Paciente envio audio - Julia respondio solo con texto (voz desactivada)');
       }
 
       // Enviar ubicacion proactivamente si Julia menciono la direccion

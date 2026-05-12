@@ -9,6 +9,61 @@ const { google } = require('googleapis');
 console.log('[Config] ElevenLabs API Key:', process.env.ELEVENLABS_API_KEY ? 'CONFIGURADA (' + process.env.ELEVENLABS_API_KEY.substring(0, 10) + '...)' : 'NO CONFIGURADA');
 console.log('[Config] ElevenLabs Voice ID:', process.env.ELEVENLABS_VOICE_ID || 'NO CONFIGURADA (usara default)');
 
+// ── BUSCAR CITAS DEL PACIENTE EN CALENDAR ────────────────
+async function getPatientAppointments(doctorKey, phone) {
+  try {
+    var calendar = getCalendarForDoctor(doctorKey);
+    if (!calendar) return { past: [], future: [], hasHistory: false };
+    
+    // Buscar citas pasadas (ultimos 6 meses) y futuras (proximos 3 meses)
+    var now = new Date();
+    var sixMonthsAgo = new Date(now.getTime() - 180 * 24 * 60 * 60 * 1000);
+    var threeMonthsFuture = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000);
+    
+    var result = await calendar.events.list({
+      calendarId: 'primary',
+      timeMin: sixMonthsAgo.toISOString(),
+      timeMax: threeMonthsFuture.toISOString(),
+      singleEvents: true,
+      orderBy: 'startTime',
+      q: phone.slice(-7) // Buscar por ultimos 7 digitos del telefono
+    });
+    
+    var events = result.data.items || [];
+    var past = [], future = [];
+    
+    events.forEach(function(e) {
+      var startStr = e.start.dateTime || e.start.date;
+      if (!startStr) return;
+      var startDate = new Date(startStr);
+      var info = {
+        date: startStr,
+        summary: e.summary || '',
+        description: e.description || '',
+        formattedDate: startDate.toLocaleDateString('es-DO', { 
+          weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+          timeZone: 'America/Santo_Domingo'
+        }),
+        formattedTime: startDate.toLocaleTimeString('es-DO', { 
+          hour: '2-digit', minute: '2-digit', hour12: true,
+          timeZone: 'America/Santo_Domingo'
+        })
+      };
+      if (startDate < now) past.push(info);
+      else future.push(info);
+    });
+    
+    return { 
+      past: past, 
+      future: future, 
+      hasHistory: past.length > 0 || future.length > 0
+    };
+  } catch(err) {
+    console.error('[Calendar] Error buscando citas del paciente:', err.message);
+    return { past: [], future: [], hasHistory: false };
+  }
+}
+
 // ── GOOGLE CALENDAR HELPERS ──────────────────────────────
 // Cargar tokens guardados por calendar-auth.js
 function getSavedRefreshToken(doctorKey) {
@@ -406,16 +461,41 @@ function getDoctorByPhoneId(phoneId) {
 }
 
 
-async function askClaude(history, doctor) {
+async function askClaude(history, doctor, patientAppts) {
   // Filtrar campos internos antes de enviar a Claude
   var cleanMessages = history.map(function(m) {
     return { role: m.role, content: m.content };
   });
+  
+  // Construir prompt del sistema con info del paciente
+  var systemPrompt = buildSystemPrompt(doctor);
+  
+  // Si tenemos historial del paciente, agregarlo al contexto
+  if (patientAppts && patientAppts.hasHistory) {
+    var apptInfo = "\n\nHISTORIAL DE CITAS DE ESTE PACIENTE (informacion real de Google Calendar):\n";
+    if (patientAppts.past.length > 0) {
+      apptInfo += "\nCITAS PASADAS:\n";
+      patientAppts.past.forEach(function(a) {
+        apptInfo += "- " + a.formattedDate + " a las " + a.formattedTime + " (" + a.summary + ")\n";
+      });
+    }
+    if (patientAppts.future.length > 0) {
+      apptInfo += "\nCITAS FUTURAS AGENDADAS:\n";
+      patientAppts.future.forEach(function(a) {
+        apptInfo += "- " + a.formattedDate + " a las " + a.formattedTime + " (" + a.summary + ")\n";
+      });
+    }
+    apptInfo += "\nUSA ESTA INFORMACION cuando el paciente pregunte sobre sus citas. NO digas que no tienes acceso al historial - SI lo tienes.\n";
+    systemPrompt += apptInfo;
+  } else if (patientAppts) {
+    systemPrompt += "\n\nESTE PACIENTE NO TIENE CITAS REGISTRADAS aun en el sistema (primer contacto o cliente antiguo sin registro digital).";
+  }
+  
   var res = await axios.post('https://api.anthropic.com/v1/messages', {
     model: 'claude-sonnet-4-20250514',
     max_tokens: 400,
     temperature: 0.85,
-    system: buildSystemPrompt(doctor),
+    system: systemPrompt,
     messages: cleanMessages,
   }, {
     headers: {
@@ -785,20 +865,22 @@ router.post('/webhook', async function(req, res) {
     var wasVoiceMessage = (msgType === 'audio');
     
     if (msgType === 'audio') {
-      await sendMeta(phone, 'Un momentico, estoy escuchando tu nota de voz...', phoneId, token);
+      // Mensaje 'un momentico' eliminado - mas profesional sin notificacion
       var mediaId = message.audio && message.audio.id;
       var transcripcion = await transcribeAudio(mediaId, token);
       if (transcripcion && transcripcion.trim()) {
         console.log('Voz transcrita: ' + transcripcion);
         history.push({ role: 'user', content: '[Nota de voz]: ' + transcripcion });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askClaude(history, doctor);
+        // Buscar historial de citas del paciente
+        var patientAppts = await getPatientAppointments(doctorKey, phone);
+        reply = await askClaude(history, doctor, patientAppts);
       } else {
         reply = 'Disculpe, no pude escuchar bien su nota de voz. Puede escribirme su consulta.';
       }
 
     } else if (msgType === 'image') {
-      await sendMeta(phone, 'Un momentico, estoy revisando la imagen...', phoneId, token);
+      // Mensaje 'un momentico' eliminado - mas profesional sin notificacion
       var caption = (message.image && message.image.caption) || '';
       var imageId = message.image && message.image.id;
       try {
@@ -846,7 +928,9 @@ router.post('/webhook', async function(req, res) {
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
         history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
-        reply = await askClaude(history, doctor);
+        // Buscar historial de citas del paciente
+        var patientAppts = await getPatientAppointments(doctorKey, phone);
+        reply = await askClaude(history, doctor, patientAppts);
       }
       if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
 
@@ -858,7 +942,9 @@ router.post('/webhook', async function(req, res) {
         // Enviar texto primero
         history.push({ role: 'user', content: msgText });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askClaude(history, doctor);
+        // Buscar historial de citas del paciente
+        var patientAppts = await getPatientAppointments(doctorKey, phone);
+        reply = await askClaude(history, doctor, patientAppts);
         history.push({ role: 'assistant', content: reply });
         await sendMeta(phone, reply, phoneId, token);
         // Luego enviar ubicacion
@@ -872,7 +958,9 @@ router.post('/webhook', async function(req, res) {
       } else {
         history.push({ role: 'user', content: msgText || 'Hola' });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
-        reply = await askClaude(history, doctor);
+        // Buscar historial de citas del paciente
+        var patientAppts = await getPatientAppointments(doctorKey, phone);
+        reply = await askClaude(history, doctor, patientAppts);
       }
     } else {
       reply = 'Recibí su mensaje. En que le puedo ayudar?';

@@ -15,6 +15,12 @@ console.log('[Config] ElevenLabs Voice ID:', process.env.ELEVENLABS_VOICE_ID || 
 const DATA_DIR = process.env.RAILWAY_VOLUME_MOUNT_PATH || '/data';
 const TOKENS_FILE = path.join(DATA_DIR, 'google-tokens.json');
 const NOTES_FILE = path.join(DATA_DIR, 'patient-notes.json');
+const PHOTOS_DIR = path.join(DATA_DIR, 'patient-photos');
+const PHOTOS_INDEX_FILE = path.join(DATA_DIR, 'patient-photos-index.json');
+const MANUAL_CLIENTS_FILE = path.join(DATA_DIR, 'manual-clients.json');
+if (!fs.existsSync(PHOTOS_DIR)) {
+  try { fs.mkdirSync(PHOTOS_DIR, { recursive: true }); } catch(e) {}
+}
 if (!fs.existsSync(DATA_DIR)) {
   try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e) {}
 }
@@ -956,6 +962,238 @@ router.get('/all-notes', function(req, res) {
     }
   });
   res.json({ notes: filtered });
+});
+
+// ══════════════════════════════════════════════════════════════
+//  SISTEMA DE FOTOS DEL PACIENTE (Antes/Despues)
+// ══════════════════════════════════════════════════════════════
+
+function loadPhotosIndex() {
+  try {
+    if (fs.existsSync(PHOTOS_INDEX_FILE)) {
+      return JSON.parse(fs.readFileSync(PHOTOS_INDEX_FILE, 'utf8'));
+    }
+  } catch(e) { console.error('[Photos] Error leyendo indice:', e.message); }
+  return {};
+}
+
+function savePhotosIndex(idx) {
+  try {
+    fs.writeFileSync(PHOTOS_INDEX_FILE, JSON.stringify(idx, null, 2));
+    return true;
+  } catch(e) { 
+    console.error('[Photos] Error guardando indice:', e.message); 
+    return false;
+  }
+}
+
+// POST /whatsapp/patient-photo - Subir foto (base64)
+router.post('/patient-photo', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    var doctor = req.body.doctor || 'quiropedia';
+    var phone = req.body.phone || '';
+    var category = req.body.category || 'general'; // antes/despues/durante/general
+    var caption = req.body.caption || '';
+    var imageBase64 = req.body.image || '';
+    
+    if (!phone || !imageBase64) {
+      return res.status(400).json({ error: 'phone e image son requeridos' });
+    }
+    
+    // Limpiar base64 (quitar prefijo data:image/jpeg;base64,)
+    var cleanBase64 = imageBase64.replace(/^data:image\/\w+;base64,/, '');
+    var buffer = Buffer.from(cleanBase64, 'base64');
+    
+    // Validar tamano maximo 2MB
+    if (buffer.length > 2 * 1024 * 1024) {
+      return res.status(400).json({ error: 'Imagen muy grande (max 2MB)' });
+    }
+    
+    // Generar ID unico y nombre de archivo
+    var photoId = Date.now() + '_' + Math.random().toString(36).substring(2, 8);
+    var filename = doctor + '_' + phoneKey(phone) + '_' + photoId + '.jpg';
+    var filepath = path.join(PHOTOS_DIR, filename);
+    
+    fs.writeFileSync(filepath, buffer);
+    
+    // Actualizar indice
+    var idx = loadPhotosIndex();
+    var pkey = doctor + '_' + phoneKey(phone);
+    if (!idx[pkey]) idx[pkey] = [];
+    idx[pkey].push({
+      id: photoId,
+      filename: filename,
+      category: category,
+      caption: caption,
+      uploadedAt: new Date().toISOString(),
+      size: buffer.length
+    });
+    savePhotosIndex(idx);
+    
+    console.log('[Photos] Foto guardada: ' + filename + ' (' + Math.round(buffer.length/1024) + ' KB)');
+    res.json({ ok: true, photoId: photoId, filename: filename });
+  } catch(e) {
+    console.error('[Photos] Error guardando foto:', e.message);
+    res.status(500).json({ error: 'Error al guardar foto' });
+  }
+});
+
+// GET /whatsapp/patient-photos?doctor=X&phone=Y - Listar fotos
+router.get('/patient-photos', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctor = req.query.doctor || 'quiropedia';
+  var phone = req.query.phone || '';
+  if (!phone) return res.json({ photos: [] });
+  
+  var idx = loadPhotosIndex();
+  var pkey = doctor + '_' + phoneKey(phone);
+  res.json({ photos: idx[pkey] || [] });
+});
+
+// GET /whatsapp/photo/:filename - Servir imagen
+router.get('/photo/:filename', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    var filename = req.params.filename;
+    // Validar que sea un nombre seguro (sin path traversal)
+    if (!/^[a-zA-Z0-9_\.]+$/.test(filename)) {
+      return res.status(400).send('Invalid filename');
+    }
+    var filepath = path.join(PHOTOS_DIR, filename);
+    if (!fs.existsSync(filepath)) {
+      return res.status(404).send('Not found');
+    }
+    res.sendFile(filepath);
+  } catch(e) {
+    console.error('[Photos] Error sirviendo foto:', e.message);
+    res.status(500).send('Error');
+  }
+});
+
+// DELETE /whatsapp/patient-photo - Eliminar foto
+router.delete('/patient-photo', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    var doctor = req.body.doctor || req.query.doctor || 'quiropedia';
+    var phone = req.body.phone || req.query.phone || '';
+    var photoId = req.body.photoId || req.query.photoId || '';
+    if (!phone || !photoId) return res.status(400).json({ error: 'phone y photoId requeridos' });
+    
+    var idx = loadPhotosIndex();
+    var pkey = doctor + '_' + phoneKey(phone);
+    if (!idx[pkey]) return res.json({ ok: true });
+    
+    var photoIdx = idx[pkey].findIndex(function(p) { return p.id === photoId; });
+    if (photoIdx >= 0) {
+      var photo = idx[pkey][photoIdx];
+      // Eliminar archivo fisico
+      try {
+        var fp = path.join(PHOTOS_DIR, photo.filename);
+        if (fs.existsSync(fp)) fs.unlinkSync(fp);
+      } catch(e) {}
+      idx[pkey].splice(photoIdx, 1);
+      savePhotosIndex(idx);
+    }
+    res.json({ ok: true });
+  } catch(e) {
+    console.error('[Photos] Error eliminando:', e.message);
+    res.status(500).json({ error: 'Error eliminando foto' });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════
+//  SISTEMA DE CLIENTES MANUALES - Pacientes agregados manualmente
+// ══════════════════════════════════════════════════════════════
+
+function loadManualClients() {
+  try {
+    if (fs.existsSync(MANUAL_CLIENTS_FILE)) {
+      return JSON.parse(fs.readFileSync(MANUAL_CLIENTS_FILE, 'utf8'));
+    }
+  } catch(e) { console.error('[Manual] Error leyendo:', e.message); }
+  return {};
+}
+
+function saveManualClients(clients) {
+  try {
+    fs.writeFileSync(MANUAL_CLIENTS_FILE, JSON.stringify(clients, null, 2));
+    return true;
+  } catch(e) { 
+    console.error('[Manual] Error guardando:', e.message); 
+    return false;
+  }
+}
+
+// POST /whatsapp/manual-client - Crear cliente manual
+router.post('/manual-client', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    var doctor = req.body.doctor || 'quiropedia';
+    var phone = req.body.phone || '';
+    var name = req.body.name || '';
+    var notes = req.body.notes || '';
+    var email = req.body.email || '';
+    
+    if (!phone || !name) return res.status(400).json({ error: 'phone y name requeridos' });
+    
+    var clients = loadManualClients();
+    var key = doctor + '_' + phoneKey(phone);
+    clients[key] = {
+      doctor: doctor,
+      phone: phone,
+      name: name,
+      notes: notes,
+      email: email,
+      source: 'manual',
+      createdAt: clients[key] ? clients[key].createdAt : new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    
+    if (saveManualClients(clients)) {
+      console.log('[Manual] Cliente guardado: ' + name + ' (' + phone + ')');
+      res.json({ ok: true, client: clients[key] });
+    } else {
+      res.status(500).json({ error: 'Error al guardar' });
+    }
+  } catch(e) {
+    console.error('[Manual] Error:', e.message);
+    res.status(500).json({ error: 'Error creando cliente' });
+  }
+});
+
+// GET /whatsapp/manual-clients?doctor=X - Listar todos los clientes manuales
+router.get('/manual-clients', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var doctor = req.query.doctor || 'quiropedia';
+  var clients = loadManualClients();
+  var filtered = {};
+  Object.keys(clients).forEach(function(key) {
+    if (clients[key].doctor === doctor) {
+      filtered[key] = clients[key];
+    }
+  });
+  res.json({ clients: filtered });
+});
+
+// DELETE /whatsapp/manual-client - Eliminar cliente manual
+router.delete('/manual-client', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  try {
+    var doctor = req.body.doctor || req.query.doctor || 'quiropedia';
+    var phone = req.body.phone || req.query.phone || '';
+    if (!phone) return res.status(400).json({ error: 'phone requerido' });
+    
+    var clients = loadManualClients();
+    var key = doctor + '_' + phoneKey(phone);
+    if (clients[key]) {
+      delete clients[key];
+      saveManualClients(clients);
+    }
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: 'Error eliminando' });
+  }
 });
 
 router.get('/webhook', function(req, res) {

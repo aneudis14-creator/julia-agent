@@ -18,8 +18,8 @@ const PORT = process.env.PORT || 3000;
 app.use(helmet());
 app.use(cors());
 app.use(morgan('combined'));
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+app.use(bodyParser.json({ limit: '5mb' }));
+app.use(bodyParser.urlencoded({ extended: true, limit: '5mb' }));
 
 function log(tag, data) { console.log(`[${new Date().toISOString()}] [${tag}]`, JSON.stringify(data, null, 2)); }
 function ok(res, data)          { return res.status(200).json({ success: true, ...data }); }

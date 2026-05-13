@@ -323,14 +323,33 @@ function parseAppointmentDate(dateStr, timeStr) {
 
     target.setHours(hour, minute, 0, 0);
     
-    // Validar horario laboral (9 AM - 5:30 PM, lunes a sabado)
-    var dayOfWeek = target.getDay();
-    var isWeekday = dayOfWeek >= 1 && dayOfWeek <= 6;
-    var isWorkHour = (hour >= 9) && (hour < 17 || (hour === 17 && minute <= 30));
+    // Validar horario laboral - Quiropedia:
+    // L-V: 9 AM - 5:30 PM
+    // Sabado: 9 AM - 4:00 PM
+    // Domingo de MAYO: 9 AM - 2:00 PM (mes de las madres)
+    // Domingo despues de mayo: cerrado
+    var dayOfWeek = target.getDay();  // 0=domingo, 6=sabado
+    var currentMonth = target.getMonth(); // 0=enero, 4=mayo
+    var isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5; // L-V
+    var isSaturday = dayOfWeek === 6;
+    var isSundayInMay = dayOfWeek === 0 && currentMonth === 4; // Mayo es mes 4
+    var isOpenDay = isWeekday || isSaturday || isSundayInMay;
     
-    console.log('[Calendar] Fecha calculada:', target.toString(), '| Laborable:', isWeekday && isWorkHour, '| Hora:', hour + ':' + minute);
+    var isWorkHour = false;
+    if (isWeekday) {
+      // L-V: 9 AM a 5:30 PM
+      isWorkHour = (hour >= 9) && (hour < 17 || (hour === 17 && minute <= 30));
+    } else if (isSaturday) {
+      // Sabado: 9 AM a 4:00 PM
+      isWorkHour = (hour >= 9) && (hour < 16 || (hour === 16 && minute === 0));
+    } else if (isSundayInMay) {
+      // Domingo en mayo: 9 AM a 2:00 PM
+      isWorkHour = (hour >= 9) && (hour < 14 || (hour === 14 && minute === 0));
+    }
     
-    if (!isWeekday) console.log('[Calendar] WARN: Fecha cae en domingo!');
+    console.log('[Calendar] Fecha calculada:', target.toString(), '| Dia laborable:', isOpenDay, '| Hora laboral:', isWorkHour, '| Hora:', hour + ':' + minute);
+    
+    if (!isOpenDay) console.log('[Calendar] WARN: Fecha cae en domingo fuera de mayo!');
     if (!isWorkHour) console.log('[Calendar] WARN: Hora fuera de horario laboral (' + hour + ':' + minute + ')');
     
     return target;
@@ -400,11 +419,11 @@ function getDoctorByPhoneId(phoneId) {
       especialidad: 'Quiropodologia - Salud de los pies',
       whatsapp_directo: '809-425-2314',
       emergencias: '809-425-2314',
-      clinicas: [{ nombre: 'Quiropedia RD', direccion: 'Plaza La Marquesa 1, Local 81, Ciudad Juan Bosch, Santo Domingo Este', referencia: 'Arriba de Farmacia Carol', dias: 'Lunes a Sabado', horario: '9:00 AM - 5:30 PM', sistema: 'Con cita previa' }],
+      clinicas: [{ nombre: 'Quiropedia RD', direccion: 'Plaza La Marquesa 1, Local 81, Ciudad Juan Bosch, Santo Domingo Este', referencia: 'Arriba de Farmacia Carol', dias: 'Lunes a Domingo (mayo)', horario: 'L-V 9:00 AM-5:30 PM, Sab 9:00 AM-4:00 PM, Dom mayo 9:00 AM-2:00 PM', sistema: 'Con cita previa' }],
       precios: { evaluacion: 'RD$500', pedicure_clinico: 'RD$2,000', quiropedia_basica: 'RD$3,700', quiropedia_avanzada: 'RD$4,700', pago: 'Efectivo, tarjeta debito/credito, transferencia' },
       seguros: 'No acepta seguros - solo pago directo',
       servicios: 'Evaluacion inicial RD$500, Pedicure clinico RD$2000, Eliminacion de callos RD$1000, Verruga plantar RD$1000, Tina pedis RD$1000, Quiropedia basica RD$3700, Quiropedia avanzada RD$4700, Extraccion de laterales sin granuloma RD$2500, Extraccion con granuloma RD$3000, Pedicure antifungico menos 4 dedos RD$1200, Pedicure antifungico mas 5 dedos RD$1800, Fresado RD$4000, Primera cura RD$500, Seguimientos RD$1000, Pedicura pie sano RD$900, Manicura hombre RD$650, Manicura mujer RD$450, Manicure antifungico RD$1000, Retiro gel RD$200, Retiro acrilico RD$200, Pintura en gel RD$500',
-      no_trabaja: 'Domingos y dias feriados',
+      no_trabaja: 'Domingos despues de mayo y dias feriados',
       preparacion: 'Llegar puntual. Traer calzado comodo.',
       info_agendar: 'Nombre completo, servicio que desea y dia y hora preferida.',
       hospital_referencia: 'Quiropedia RD - Plaza La Marquesa I',

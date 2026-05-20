@@ -582,7 +582,7 @@ async function askClaude(history, doctor, patientAppts, patientNotes) {
   var res;
   try {
     res = await axios.post('https://api.anthropic.com/v1/messages', {
-      model: 'claude-haiku-4-5-20251001',
+      model: 'claude-3-5-haiku-20241022',
       max_tokens: 400,
       temperature: 0.85,
       system: systemPrompt,
@@ -1341,7 +1341,7 @@ router.post('/webhook', async function(req, res) {
           ]
         }]);
         var claudeRes = await axios.post('https://api.anthropic.com/v1/messages', {
-          model: 'claude-sonnet-4-20250514',
+          model: 'claude-3-5-sonnet-20241022',
           max_tokens: 400,
           temperature: 0.85,
           system: buildSystemPrompt(doctor),

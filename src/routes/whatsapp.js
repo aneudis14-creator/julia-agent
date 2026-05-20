@@ -495,10 +495,22 @@ function getDoctorByPhoneId(phoneId) {
 
 
 async function askClaude(history, doctor, patientAppts, patientNotes) {
-  // Filtrar campos internos antes de enviar a Claude
-  var cleanMessages = history.map(function(m) {
-    return { role: m.role, content: m.content };
+  // Sanitizar mensajes: eliminar vacios, null, formato invalido
+  var cleanMessages = (history || [])
+    .filter(function(m) { return m && m.role && m.content && typeof m.content === 'string' && m.content.trim() !== ''; })
+    .map(function(m) { return { role: m.role, content: String(m.content).substring(0, 4000) }; });
+
+  // Claude requiere que empiece con 'user'
+  while (cleanMessages.length > 0 && cleanMessages[0].role !== 'user') {
+    cleanMessages.shift();
+  }
+  // Eliminar mensajes consecutivos del mismo rol
+  var dedupedMessages = [];
+  cleanMessages.forEach(function(m) {
+    var last = dedupedMessages[dedupedMessages.length - 1];
+    if (!last || last.role !== m.role) dedupedMessages.push(m);
   });
+  cleanMessages = dedupedMessages.length > 0 ? dedupedMessages : [{ role: 'user', content: 'Hola, necesito informacion.' }];
   
   // Construir prompt del sistema con info del paciente
   var systemPrompt = buildSystemPrompt(doctor);
@@ -567,20 +579,29 @@ async function askClaude(history, doctor, patientAppts, patientNotes) {
     systemPrompt += "- 'Ellos tienen acceso a su expediente' (no remitas a otro lado)\n";
   }
   
-  var res = await axios.post('https://api.anthropic.com/v1/messages', {
-    model: 'claude-sonnet-4-20250514',
-    max_tokens: 400,
-    temperature: 0.85,
-    system: systemPrompt,
-    messages: cleanMessages,
-  }, {
-    headers: {
-      'x-api-key': process.env.ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
-      'Content-Type': 'application/json',
-    }
-  });
-  return res.data.content[0].text;
+  var res;
+  try {
+    res = await axios.post('https://api.anthropic.com/v1/messages', {
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 400,
+      temperature: 0.85,
+      system: systemPrompt,
+      messages: cleanMessages,
+    }, {
+      headers: {
+        'x-api-key': process.env.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'Content-Type': 'application/json',
+      }
+    });
+    return res.data.content[0].text;
+  } catch(err) {
+    var claudeErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Claude] ERROR status=' + (err.response && err.response.status) + ' | ' + claudeErr);
+    console.error('[Claude] Messages enviados:', JSON.stringify(cleanMessages.slice(-3)));
+    // Respuesta de fallback si Claude falla
+    return 'Disculpe, estoy teniendo un problema tecnico momentaneo. Por favor intente de nuevo en unos segundos o llame al ' + (doctor.whatsapp_directo || doctor.emergencias || '');
+  }
 }
 
 // ── ELEVENLABS - Generar voz natural ──────────────────────────────

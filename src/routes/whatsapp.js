@@ -723,24 +723,62 @@ async function humanDelay(text) {
 
 async function sendMeta(to, body, phoneId, token) {
   try {
-    // Simular tiempo de escritura humano antes de enviar
+    // Validación de parámetros
+    if (!to || !body || !phoneId || !token) {
+      console.error('[sendMeta] Faltan parámetros:', { to: !!to, body: !!body, phoneId: !!phoneId, token: !!token });
+      return false;
+    }
+        
+    // Limpieza de número - CRÍTICO
+    const cleanTo = String(to).replace(/\D/g, '');
+    if (!cleanTo || cleanTo.length < 10) {
+      console.error('[sendMeta] Número inválido:', { original: to, cleaned: cleanTo });
+      return false;
+    }
+        
+    // Simular tiempo de escritura
     await humanDelay(body);
-    
-    await axios.post(
-      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
-      {
-        messaging_product: 'whatsapp',
-        to: to.replace(/\D/g, ''),
-        type: 'text',
-        text: { body: body }
-      },
-      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+        
+    // PAYLOAD CORRECTO - recipient_type es OBLIGATORIO
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: cleanTo,
+      type: 'text',
+      text: { 
+        preview_url: false,
+        body: String(body).substring(0, 4096) 
+      }
+    };
+        
+    console.log('[sendMeta] Enviando a:', cleanTo);
+        
+    const response = await axios.post(
+      `https://graph.facebook.com/v20.0/${phoneId}/messages`,
+      payload,
+      { 
+        headers: { 
+          'Authorization': `Bearer ${token}`, 
+          'Content-Type': 'application/json' 
+        },
+        timeout: 30000
+      }
     );
+        
+    console.log('[sendMeta] ✅ Enviado a', cleanTo, '| ID:', response.data?.messages?.[0]?.id);
+    return true;
+      
   } catch (err) {
-    console.error('Error enviando mensaje:', err.message);
+    console.error('[sendMeta] ERROR:');
+    if (err.response) {
+      console.error('[sendMeta] Status:', err.response.status);
+      console.error('[sendMeta] Data:', JSON.stringify(err.response.data, null, 2));
+    } else {
+      console.error('[sendMeta] Message:', err.message);
+    }
+    return false;
   }
 }
-
 async function sendLocation(to, phoneId, token, name, address, lat, lng) {
   try {
     await axios.post(

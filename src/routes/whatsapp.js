@@ -418,7 +418,9 @@ const TIMEOUT_WARN  = 30 * 60 * 1000;  // 30 minutos -> pregunta si sigue ahi
 const TIMEOUT_CLOSE = 60 * 60 * 1000;  // 60 minutos -> archiva sesion
 
 function getDoctorByPhoneId(phoneId) {
-  if (phoneId === process.env.META_PHONE_ID_QUIROPEDIA) {
+  // Quiropedia: ID hardcodeado + env var como respaldo
+  var QUIROPEDIA_ID = process.env.META_PHONE_ID_QUIROPEDIA || '1029094683628420';
+  if (phoneId === QUIROPEDIA_ID || phoneId === '1029094683628420') {
     return {
       key: 'quiropedia',
       nombre: 'Quiropedia RD',
@@ -762,7 +764,8 @@ async function sendMeta(to, body, phoneId, token) {
       { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
     );
   } catch (err) {
-    console.error('Error enviando mensaje:', err.message);
+    var metaErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[sendMeta] ERROR phoneId=' + phoneId + ' to=' + to + ' | ' + metaErr);
   }
 }
 

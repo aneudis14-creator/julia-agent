@@ -84,15 +84,25 @@ const DOCTORS = {
 };
 
 function getDoctorByNumber(waNumber) {
-  const number = waNumber.replace('whatsapp:', '').replace(/\s/g, '');
+  if (!waNumber) return { key: 'alcantara', ...DOCTORS.alcantara };
+
+  // Limpia todo y deja solo los números puros
+  const cleanIncomingNumber = waNumber.replace(/\D/g, '');
+
   for (const [key, doctor] of Object.entries(DOCTORS)) {
-    if (doctor.whatsapp_number && doctor.whatsapp_number.replace(/\s/g, '') === number) {
-      return { key, ...doctor };
+    if (doctor.whatsapp_number) {
+      const cleanDoctorNumber = doctor.whatsapp_number.replace(/\D/g, '');
+
+      // Compara de forma inteligente si los números coinciden
+      if (cleanIncomingNumber.includes(cleanDoctorNumber) || cleanDoctorNumber.includes(cleanIncomingNumber)) {
+        return { key, ...doctor };
+      }
     }
   }
+
+  console.warn(`[Julia AI] No se encontró doctor para el número: ${waNumber}. Usando fallback Alcántara.`);
   return { key: 'alcantara', ...DOCTORS.alcantara };
 }
-
 function getAlcantaraPrompt() {
   const hora = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Santo_Domingo', hour: 'numeric', hour12: false }));
   const saludo = hora >= 6 && hora < 12 ? 'Buenos dias' : hora >= 12 && hora < 18 ? 'Buenas tardes' : 'Buenas noches';

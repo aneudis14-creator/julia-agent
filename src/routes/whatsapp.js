@@ -723,37 +723,19 @@ async function humanDelay(text) {
 
 async function sendMeta(to, body, phoneId, token) {
   try {
+    // Validación de parámetros
+    if (!to || !body || !phoneId || !token) {
+      console.error('[sendMeta] Faltan parámetros:', { to: !!to, body: !!body, phoneId: !!phoneId, token: !!token });
+      return false;
+    }
+        
+    // Limpieza de número - CRÍTICO
     const cleanTo = String(to).replace(/\D/g, '');
+    if (!cleanTo || cleanTo.length < 10) {
+      console.error('[sendMeta] Número inválido:', { original: to, cleaned: cleanTo });
+      return false;
+    }
         
-    // Payload MINIMO que Meta acepta SIEMPRE
-    const payload = {
-      messaging_product: 'whatsapp',
-      to: cleanTo,
-      type: 'text',
-      text: { body: body }
-    };
-        
-    console.log('[sendMeta] Enviando a:', cleanTo);
-    console.log('[sendMeta] Payload:', JSON.stringify(payload));
-        
-    const response = await axios.post(
-      `https://graph.facebook.com/v18.0/${phoneId}/messages`,
-      payload,
-      {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-          'Content-Type': 'application/json'
-        }
-      }
-    );
-        
-    console.log('[sendMeta] ✅ Enviado!', response.data);
-    return true;
-  } catch (err) {
-    console.error('[sendMeta] ERROR:', err.response?.data || err.message);
-    return false;
-  }
-}        
     // Simular tiempo de escritura
     await humanDelay(body);
         

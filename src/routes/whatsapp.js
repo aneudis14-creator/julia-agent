@@ -515,13 +515,15 @@ async function askClaude(history, doctor, patientAppts, patientNotes) {
     if (patientNotes.nextFollowUp) {
       notesInfo += "PROXIMO SEGUIMIENTO PROGRAMADO: " + patientNotes.nextFollowUp + "\n";
     }
-    notesInfo += "\nUSA ESTA INFORMACION para contextualizar tus respuestas. Reconoce al paciente como cliente existente, menciona sus tratamientos pasados de forma natural cuando sea relevante. NO inventes informacion que no este aqui. Si el paciente pregunta por algo no registrado, di que verificara con el especialista.\n";
+    notesInfo += "\nUSA ESTA INFORMACION para contextualizar tus respuestas. Reconoce al paciente como cliente existente, menciona sus tratamientos pasados de forma natural cuando sea relevante. NO inventes informacion que no este aqui. Si el paciente pregunta por algo no registrado, ofreces agendar para coordinarlo.\n";
     systemPrompt += notesInfo;
   }
   
   // Si tenemos historial del paciente, agregarlo al contexto
   if (patientAppts && patientAppts.hasHistory) {
-    var apptInfo = "\n\nHISTORIAL DE CITAS DE ESTE PACIENTE (informacion real de Google Calendar):\n";
+    var apptInfo = "\n\n══════════════════════════════════════════════════\n";
+    apptInfo += "HISTORIAL DE CITAS DE ESTE PACIENTE (informacion real de Google Calendar):\n";
+    apptInfo += "══════════════════════════════════════════════════\n";
     if (patientAppts.past.length > 0) {
       apptInfo += "\nCITAS PASADAS:\n";
       patientAppts.past.forEach(function(a) {
@@ -533,11 +535,34 @@ async function askClaude(history, doctor, patientAppts, patientNotes) {
       patientAppts.future.forEach(function(a) {
         apptInfo += "- " + a.formattedDate + " a las " + a.formattedTime + " (" + a.summary + ")\n";
       });
+    } else {
+      apptInfo += "\nNO TIENE CITAS FUTURAS AGENDADAS.\n";
+      apptInfo += "IMPORTANTE: Si el paciente pregunta por su proxima cita o seguimiento, NO le digas que no tienes informacion. En lugar de eso:\n";
+      apptInfo += "1. Reconoce que es paciente conocido (menciona su ultima visita si aplica)\n";
+      apptInfo += "2. OFRECE agendar el seguimiento ahora mismo\n";
+      apptInfo += "3. Ejemplo: 'Veo que su ultima visita fue [fecha]. Aun no tiene un seguimiento agendado. Le coordinamos uno ahora? Que dia le queda mejor esta semana?'\n";
     }
-    apptInfo += "\nUSA ESTA INFORMACION cuando el paciente pregunte sobre sus citas. NO digas que no tienes acceso al historial - SI lo tienes.\n";
+    apptInfo += "\nUSA ESTA INFORMACION cuando el paciente pregunte sobre sus citas. NUNCA digas que no tienes acceso al historial - SI lo tienes.\n";
     systemPrompt += apptInfo;
   } else if (patientAppts) {
-    systemPrompt += "\n\nESTE PACIENTE NO TIENE CITAS REGISTRADAS aun en el sistema (primer contacto o cliente antiguo sin registro digital).";
+    // Paciente sin historial digital - puede ser primer contacto O cliente antiguo
+    systemPrompt += "\n\n══════════════════════════════════════════════════\n";
+    systemPrompt += "PACIENTE SIN HISTORIAL DIGITAL EN EL SISTEMA\n";
+    systemPrompt += "══════════════════════════════════════════════════\n";
+    systemPrompt += "Este paciente no tiene citas registradas en nuestro Google Calendar. Puede ser:\n";
+    systemPrompt += "- Primer contacto (nunca ha venido)\n";
+    systemPrompt += "- Cliente antiguo cuyos datos no estan digitalizados aun\n\n";
+    systemPrompt += "REGLA CRITICA - QUE HACER SI PREGUNTA POR SU CITA O SEGUIMIENTO:\n";
+    systemPrompt += "NUNCA digas 'no tengo acceso a su historial' ni mandes a llamar al 809-425-2314.\n";
+    systemPrompt += "En su lugar, responde con EMPATIA y OFRECE solucion:\n\n";
+    systemPrompt += "Ejemplos correctos:\n";
+    systemPrompt += "- 'Permitame ayudarle a coordinar su seguimiento. Cuando fue su ultima visita aproximadamente? Asi le calculamos la fecha ideal.'\n";
+    systemPrompt += "- 'Con gusto le agendo su seguimiento. Cuando le queda mejor venir? Tenemos disponibilidad esta semana.'\n";
+    systemPrompt += "- 'Para coordinarle mejor el seguimiento, recuerda mas o menos cuando fue su ultima consulta? Asi le doy una fecha apropiada.'\n\n";
+    systemPrompt += "EJEMPLO INCORRECTO (PROHIBIDO):\n";
+    systemPrompt += "- 'No tengo acceso a su historial de citas' (NUNCA digas esto)\n";
+    systemPrompt += "- 'Necesita contactar al 809-425-2314' (NO mandes a llamar - tu eres la asistente)\n";
+    systemPrompt += "- 'Ellos tienen acceso a su expediente' (no remitas a otro lado)\n";
   }
   
   var res = await axios.post('https://api.anthropic.com/v1/messages', {
@@ -723,62 +748,24 @@ async function humanDelay(text) {
 
 async function sendMeta(to, body, phoneId, token) {
   try {
-    // Validación de parámetros
-    if (!to || !body || !phoneId || !token) {
-      console.error('[sendMeta] Faltan parámetros:', { to: !!to, body: !!body, phoneId: !!phoneId, token: !!token });
-      return false;
-    }
-        
-    // Limpieza de número - CRÍTICO
-    const cleanTo = String(to).replace(/\D/g, '');
-    if (!cleanTo || cleanTo.length < 10) {
-      console.error('[sendMeta] Número inválido:', { original: to, cleaned: cleanTo });
-      return false;
-    }
-        
-    // Simular tiempo de escritura
+    // Simular tiempo de escritura humano antes de enviar
     await humanDelay(body);
-        
-    // PAYLOAD CORRECTO - recipient_type es OBLIGATORIO
-    const payload = {
-      messaging_product: 'whatsapp',
-      recipient_type: 'individual',
-      to: cleanTo,
-      type: 'text',
-      text: { 
-        preview_url: false,
-        body: String(body).substring(0, 4096) 
-      }
-    };
-        
-    console.log('[sendMeta] Enviando a:', cleanTo);
-        
-    const response = await axios.post(
-      `https://graph.facebook.com/v20.0/${phoneId}/messages`,
-      payload,
-      { 
-        headers: { 
-          'Authorization': `Bearer ${token}`, 
-          'Content-Type': 'application/json' 
-        },
-        timeout: 30000
-      }
+    
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      {
+        messaging_product: 'whatsapp',
+        to: to.replace(/\D/g, ''),
+        type: 'text',
+        text: { body: body }
+      },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
     );
-        
-    console.log('[sendMeta] ✅ Enviado a', cleanTo, '| ID:', response.data?.messages?.[0]?.id);
-    return true;
-      
   } catch (err) {
-    console.error('[sendMeta] ERROR:');
-    if (err.response) {
-      console.error('[sendMeta] Status:', err.response.status);
-      console.error('[sendMeta] Data:', JSON.stringify(err.response.data, null, 2));
-    } else {
-      console.error('[sendMeta] Message:', err.message);
-    }
-    return false;
+    console.error('Error enviando mensaje:', err.message);
   }
 }
+
 async function sendLocation(to, phoneId, token, name, address, lat, lng) {
   try {
     await axios.post(
@@ -1260,16 +1247,26 @@ router.post('/webhook', async function(req, res) {
     var msgText = (message.text && message.text.body) || '';
     var phoneId = value.metadata && value.metadata.phone_number_id;
 
-    var token = process.env.META_TOKEN_ALCANTARA;
-    if (phoneId === process.env.META_PHONE_ID_BATISTA) {
-      token = process.env.META_TOKEN_BATISTA;
-    }
-    if (phoneId === process.env.META_PHONE_ID_QUIROPEDIA) {
-      token = process.env.META_TOKEN_QUIROPEDIA;
-    }
-
+    // PRIMERO identificar al doctor (usando doctors.js, no env vars)
     var doctor = getDoctorByPhoneId(phoneId);
     console.log('WhatsApp [' + phone + '] -> ' + doctor.nombre + ' | ' + msgType);
+
+    // DESPUES seleccionar el token basado en doctor.key (mas confiable)
+    var token;
+    if (doctor.key === 'quiropedia') {
+      token = process.env.META_TOKEN_QUIROPEDIA;
+    } else if (doctor.key === 'batista') {
+      token = process.env.META_TOKEN_BATISTA;
+    } else {
+      token = process.env.META_TOKEN_ALCANTARA;
+    }
+
+    // Logs diagnosticos
+    if (!token) {
+      console.error('[Token] FALTA TOKEN para doctor.key=' + doctor.key + ' phoneId=' + phoneId);
+    } else {
+      console.log('[Token] Usando token de ' + doctor.key + ' (primeros 10: ' + token.substring(0,10) + '...) phoneId=' + phoneId);
+    }
 
     var convKey = doctor.key + '_' + phone;
     if (!conversations.has(convKey)) conversations.set(convKey, []);
@@ -1665,6 +1662,7 @@ router.get('/clients', function(req, res) {
 });
 
 router.get('/status', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
   res.json({
     status: 'active',
     api: 'Meta WhatsApp Cloud API',

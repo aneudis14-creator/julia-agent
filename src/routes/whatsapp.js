@@ -201,6 +201,41 @@ function formatLocalISO(date) {
          'T' + pad(date.getHours()) + ':' + pad(date.getMinutes()) + ':00-04:00';
 }
 
+// Notificar al dueno/admin del centro cuando Julia agenda una cita nueva
+async function notifyOwnerNewAppointment(doctor, info, patientPhone, calendarLink) {
+  try {
+    if (!doctor || !doctor.owner_phone) {
+      console.log('[Notify] No hay owner_phone configurado para ' + (doctor && doctor.key));
+      return;
+    }
+    var token = doctor.key === 'quiropedia' ? process.env.META_TOKEN_QUIROPEDIA :
+                doctor.key === 'batista' ? process.env.META_TOKEN_BATISTA :
+                process.env.META_TOKEN_ALCANTARA;
+    var phoneId = doctor.key === 'quiropedia' ? (process.env.META_PHONE_ID_QUIROPEDIA || '1029094683628420') :
+                  doctor.key === 'batista' ? process.env.META_PHONE_ID_BATISTA :
+                  process.env.META_PHONE_ID_ALCANTARA;
+    if (!token || !phoneId) {
+      console.log('[Notify] Falta token o phoneId para notificar a ' + doctor.owner_name);
+      return;
+    }
+    var mensaje = '🗓️ *Nueva cita agendada por Julia*\n\n' +
+      '👤 Paciente: ' + (info.name || 'Sin nombre') + '\n' +
+      '📱 Telefono: +' + patientPhone + '\n' +
+      '📅 Fecha: ' + info.date + '\n' +
+      '⏰ Hora: ' + info.time + '\n' +
+      (calendarLink ? '\n🔗 ' + calendarLink : '');
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      { messaging_product: 'whatsapp', to: doctor.owner_phone.replace(/\D/g,''), type: 'text', text: { body: mensaje } },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+    );
+    console.log('[Notify] Notificacion enviada a ' + doctor.owner_name + ' (' + doctor.owner_phone + ')');
+  } catch(err) {
+    var notifErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Notify] ERROR notificando a ' + (doctor && doctor.owner_name) + ':', notifErr);
+  }
+}
+
 async function createCalendarEvent(doctorKey, info, phone) {
   console.log('[Calendar] Intentando crear evento para ' + doctorKey + ' con info:', JSON.stringify(info));
   var calendar = getCalendarForDoctor(doctorKey);
@@ -240,7 +275,12 @@ async function createCalendarEvent(doctorKey, info, phone) {
     console.log('✅ Cita creada en Calendar: ' + result.data.htmlLink);
     return result.data;
   } catch(err) {
-    console.error('Error creando evento Calendar:', err.message);
+    var detailedErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Calendar] ERROR creando evento para ' + doctorKey + ':', detailedErr);
+    console.error('[Calendar] Stack:', err.stack);
+    if (err.message && err.message.indexOf('invalid_grant') >= 0) {
+      console.error('[Calendar] ATENCION: refresh_token invalido/expirado para ' + doctorKey + '. Renovar via /calendar-auth/connect/' + doctorKey);
+    }
     return null;
   }
 }
@@ -397,6 +437,30 @@ try {
 } catch(e) { console.error('Error cargando datos:', e.message); }
 
 // Guardar cada cierto tiempo
+
+// Reconstruir lastActivity_map desde los timestamps de los mensajes
+setTimeout(function() {
+  conversations.forEach(function(history, key) {
+    if (history && history.length > 0) {
+      // Buscar el timestamp mas reciente
+      var maxTs = 0;
+      history.forEach(function(m) {
+        if (m && m.timestamp && m.timestamp > maxTs) maxTs = m.timestamp;
+      });
+      if (maxTs > 0) lastActivity_map.set(key, maxTs);
+    }
+  });
+  archivedConvs.forEach(function(arch, key) {
+    if (arch && arch.history && arch.history.length > 0) {
+      var maxTs = 0;
+      arch.history.forEach(function(m) {
+        if (m && m.timestamp && m.timestamp > maxTs) maxTs = m.timestamp;
+      });
+      if (maxTs > 0 && !lastActivity_map.has(key)) lastActivity_map.set(key, maxTs);
+    }
+  });
+  console.log('[Init] lastActivity_map reconstruido: ' + lastActivity_map.size + ' conversaciones');
+}, 100);
 function saveData() {
   try {
     var convObj = {};
@@ -1483,6 +1547,12 @@ router.post('/webhook', async function(req, res) {
             cd.calendarEventLink = result.htmlLink;
             clientData.set(cKey, cd);
             saveData();
+            // Notificar al dueno del centro por WhatsApp
+            notifyOwnerNewAppointment(doctor, apptInfo, phone, result.htmlLink);
+          } else {
+            console.error('[Calendar] Cita detectada pero no se guardo en Calendar - notificar manualmente');
+            // Notificar igual al dueno aunque Calendar haya fallado
+            notifyOwnerNewAppointment(doctor, apptInfo, phone, null);
           }
         });
       }
@@ -1523,6 +1593,12 @@ router.get('/conversations', function(req, res) {
     var phone = parts.slice(1).join('_');
     var lastMsg = history.length > 0 ? history[history.length-1] : null;
     var lastActivity = lastActivity_map.get(key) || data.closedAt || null;
+    // Fallback: usar timestamp del ultimo mensaje si no hay registro
+    if (!lastActivity && history && history.length > 0) {
+      for (var iLA = history.length - 1; iLA >= 0; iLA--) {
+        if (history[iLA] && history[iLA].timestamp) { lastActivity = history[iLA].timestamp; break; }
+      }
+    }
     var cData = clientData.get(key) || {};
     var mappedMessages = history.map(function(m) {
       var base = { role: m.role, content: m.content, timestamp: m.timestamp || null };
@@ -1670,13 +1746,20 @@ router.get('/clients', function(req, res) {
   var clientsList = [];
   clientData.forEach(function(data, key) {
     var conv = conversations.get(key) || [];
+    var lastSeen = lastActivity_map.get(key);
+    // Fallback: si no hay registro en memoria, usar timestamp del ultimo mensaje
+    if (!lastSeen && conv.length > 0) {
+      for (var i = conv.length - 1; i >= 0; i--) {
+        if (conv[i] && conv[i].timestamp) { lastSeen = conv[i].timestamp; break; }
+      }
+    }
     clientsList.push({
       id: key,
       name: data.name || null,
       phone: data.phone || key.split('_').slice(1).join('_'),
       doctor: data.doctor || key.split('_')[0],
       firstSeen: data.firstSeen || null,
-      lastSeen: lastActivity_map.get(key) || null,
+      lastSeen: lastSeen || null,
       msgCount: conv.length,
       hasAppointment: data.hasAppointment || false,
     });

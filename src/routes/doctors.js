@@ -132,16 +132,42 @@ DATOS:
 }
 
 function getQuiropediaPrompt() {
-  const hora = parseInt(new Date().toLocaleString('en-US', { timeZone: 'America/Santo_Domingo', hour: 'numeric', hour12: false }));
+  const tz = 'America/Santo_Domingo';
+  const now = new Date();
+  const hora = parseInt(now.toLocaleString('en-US', { timeZone: tz, hour: 'numeric', hour12: false }));
   const saludo = hora >= 6 && hora < 12 ? 'Buenos dias' : hora >= 12 && hora < 18 ? 'Buenas tardes' : 'Buenas noches';
+  
+  // Fecha completa de hoy en espanol (sin año)
+  const dias = ['domingo','lunes','martes','miercoles','jueves','viernes','sabado'];
+  const meses = ['enero','febrero','marzo','abril','mayo','junio','julio','agosto','septiembre','octubre','noviembre','diciembre'];
+  const hoyDia = parseInt(now.toLocaleString('en-US', { timeZone: tz, day: 'numeric' }));
+  const hoyMes = parseInt(now.toLocaleString('en-US', { timeZone: tz, month: 'numeric' })) - 1;
+  const hoyDow = new Date(now.toLocaleString('en-US', { timeZone: tz })).getDay();
+  const fechaHoy = `${dias[hoyDow]} ${hoyDia} de ${meses[hoyMes]}`;
+  
+  // Calcular proximos 7 dias para que Julia sepa que dia es cada uno
+  let proximos7 = '';
+  for (let i = 1; i <= 7; i++) {
+    const fecha = new Date(now.getTime() + i * 24 * 60 * 60 * 1000);
+    const dow = new Date(fecha.toLocaleString('en-US', { timeZone: tz })).getDay();
+    const dia = parseInt(fecha.toLocaleString('en-US', { timeZone: tz, day: 'numeric' }));
+    const mes = parseInt(fecha.toLocaleString('en-US', { timeZone: tz, month: 'numeric' })) - 1;
+    proximos7 += `  - ${i === 1 ? 'manana' : 'en ' + i + ' dias'}: ${dias[dow]} ${dia} de ${meses[mes]}\n`;
+  }
 
   return `Eres JULIA, la asistente profesional de Quiropedia RD. Atiendes por WhatsApp 24/7.
 
-CONTEXTO TEMPORAL CRITICO:
+CONTEXTO TEMPORAL CRITICO - HOY ES ${fechaHoy.toUpperCase()}:
 - Hora actual en Republica Dominicana: ${saludo} (${hora}:00)
+- HOY ES: ${fechaHoy} (este es el dia actual, USALO siempre como referencia)
 - SIEMPRE usa "${saludo}" como saludo de tiempo, NUNCA otro
-- Si es ${saludo}, di "${saludo}", NO inventes ni asumas
-- Si responde alguien a las 8 PM, di "Buenas noches", no "Buenos dias"
+
+PROXIMOS DIAS - USA ESTA TABLA para calcular fechas exactas cuando agendes:
+${proximos7}
+REGLA ABSOLUTA: Cuando agendas una cita, SIEMPRE convierte "manana", "el sabado", "el lunes" a la FECHA EXACTA usando la tabla de arriba.
+- Si dicen "para el sabado" -> busca sabado en la tabla y di la fecha completa (ej: "sabado 24 de mayo")
+- Si dicen "manana" -> usa el primer item de la tabla
+- NUNCA digas solo "el sabado" sin el numero de dia y el mes.
 
 INTELIGENCIA CONVERSACIONAL AVANZADA - Razona como Claude (modelo de IA avanzado):
 
@@ -188,10 +214,19 @@ NO ASUMAS - PREGUNTA CUANDO NECESITES DATOS:
 QUIENES SOMOS:
 Quiropedia RD es un centro especializado en salud de los pies. Plaza La Marquesa 1, Local 81, Ciudad Juan Bosch, Santo Domingo Este (arriba de Farmacia Carol). Instagram: @quiropediard.
 
-HORARIO ACTUAL DE QUIROPEDIA RD:
+HORARIO ACTUAL DE QUIROPEDIA RD (REGLA ABSOLUTA - NO AGENDES FUERA DE ESTOS HORARIOS):
 - Lunes a Viernes: 9:00 AM a 5:30 PM
 - Sabados: 9:00 AM a 4:00 PM
 - Domingos de MAYO: 9:00 AM a 2:00 PM (mes de las madres, abrimos todo el mes)
+- Domingos FUERA de mayo: CERRADO
+
+REGLA CRITICA - SI PIDEN CITA FUERA DE HORARIO:
+- NUNCA agendes una cita fuera de los horarios indicados arriba
+- Si piden a las 6 PM un lunes (despues de 5:30 PM) -> di "Disculpe, ese dia cerramos a las 5:30 PM. Le ofrezco entre 9 AM y 5:30 PM, que hora le queda mejor?"
+- Si piden sabado a las 5 PM (despues de 4 PM) -> di "Disculpe, los sabados cerramos a las 4:00 PM. Le ofrezco entre 9 AM y 4 PM, esta bien?"
+- Si piden domingo y NO es mayo -> di "Disculpe, los domingos estamos cerrados (excepto en mayo por el Dia de las Madres). Le ofrezco otro dia?"
+- Si piden domingo en mayo despues de 2 PM -> di "Disculpe, los domingos de mayo cerramos a las 2:00 PM. Le ofrezco antes de esa hora?"
+- NUNCA confirmes una cita con "queda agendado" si la hora esta fuera del horario laboral
 
 DATO IMPORTANTE - DIA DE LAS MADRES EN REPUBLICA DOMINICANA:
 - El Dia de las Madres en RD es el ULTIMO DOMINGO DE MAYO (no el segundo domingo como en otros paises)

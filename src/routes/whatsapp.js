@@ -1306,7 +1306,7 @@ router.post('/webhook', async function(req, res) {
       var transcripcion = await transcribeAudio(mediaId, token);
       if (transcripcion && transcripcion.trim()) {
         console.log('Voz transcrita: ' + transcripcion);
-        history.push({ role: 'user', content: '[Nota de voz]: ' + transcripcion });
+        history.push({ role: 'user', content: '[Nota de voz]: ' + transcripcion, timestamp: Date.now() });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
         var patientAppts = await getPatientAppointments(doctor.key, phone);
@@ -1361,10 +1361,10 @@ router.post('/webhook', async function(req, res) {
           role: 'user', 
           content: '[Imagen enviada]' + (caption ? ': ' + caption : ''),
           _imageData: dataUrl  // campo interno, NO se envia a Claude
-        });
+        , timestamp: Date.now() });
       } catch(imgErr) {
         console.error('Error procesando imagen:', imgErr.message);
-        history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : '') });
+        history.push({ role: 'user', content: '[Imagen recibida]' + (caption ? ': ' + caption : ''), timestamp: Date.now() });
         // Buscar historial de citas del paciente
         var patientAppts = await getPatientAppointments(doctor.key, phone);
         var patientNotes = getPatientNotes(doctor.key, phone);
@@ -1378,13 +1378,13 @@ router.post('/webhook', async function(req, res) {
       
       if (askingLocation && doctor.location) {
         // Enviar texto primero
-        history.push({ role: 'user', content: msgText });
+        history.push({ role: 'user', content: msgText, timestamp: Date.now() });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
         var patientAppts = await getPatientAppointments(doctor.key, phone);
         var patientNotes = getPatientNotes(doctor.key, phone);
         reply = await askClaude(history, doctor, patientAppts, patientNotes);
-        history.push({ role: 'assistant', content: reply });
+        history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
         await sendMeta(phone, reply, phoneId, token);
         // Luego enviar ubicacion
         await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
@@ -1395,7 +1395,7 @@ router.post('/webhook', async function(req, res) {
       if (isEmergency(msgText, doctor)) {
         reply = 'Esto requiere atencion inmediata. Por favor dirigase a ' + doctor.hospital_referencia + ' de urgencia' + (doctor.emergencias ? ' o llame al ' + doctor.emergencias : '') + '.';
       } else {
-        history.push({ role: 'user', content: msgText || 'Hola' });
+        history.push({ role: 'user', content: msgText || 'Hola', timestamp: Date.now() });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
         // Buscar historial de citas del paciente
         var patientAppts = await getPatientAppointments(doctor.key, phone);
@@ -1407,7 +1407,7 @@ router.post('/webhook', async function(req, res) {
     }
 
     if (reply) {
-      history.push({ role: 'assistant', content: reply });
+      history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
       await sendMeta(phone, reply, phoneId, token);
       if (citaConfirmada(reply)) {
         await alertDoctor(doctor, phone, history, phoneId, token);
@@ -1525,10 +1525,9 @@ router.get('/conversations', function(req, res) {
     var lastActivity = lastActivity_map.get(key) || data.closedAt || null;
     var cData = clientData.get(key) || {};
     var mappedMessages = history.map(function(m) {
-      if (m._imageData) {
-        return { role: m.role, content: m.content, imageData: m._imageData };
-      }
-      return { role: m.role, content: m.content };
+      var base = { role: m.role, content: m.content, timestamp: m.timestamp || null };
+      if (m._imageData) base.imageData = m._imageData;
+      return base;
     });
     convList.push({
       id: key,

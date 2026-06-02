@@ -122,8 +122,19 @@ function getCalendarForDoctor(doctorKey) {
 // Detectar si Julia confirmo una cita en su respuesta
 function juliaMentionsAddress(text) {
   if (!text) return false;
-  // Detectar cuando Julia menciona la direccion del local
+  // Detectar cuando Julia menciona la direccion del local (Quiropedia)
   return /plaza la marquesa|local 81|ciudad juan bosch|farmacia carol|le esperamos en/i.test(text);
+}
+
+// Para Dr. Alcantara: detectar cual de las 2 clinicas menciono Julia y devolver sus datos
+function getAlcantaraClinicFromText(doctor, text) {
+  if (!doctor || doctor.key !== 'alcantara' || !text || !doctor.clinicas) return null;
+  var t = text.toLowerCase();
+  var mencionaCorominas = /corominas|aliro paulino|ensanche naco/.test(t);
+  var mencionaOsler = /osler|jose lopez|josé lópez|los prados/.test(t);
+  if (mencionaCorominas) return doctor.clinicas[0];
+  if (mencionaOsler) return doctor.clinicas[1];
+  return null;
 }
 
 function detectAppointmentConfirmation(text, conversationHistory) {
@@ -476,6 +487,7 @@ function saveData() {
 }
 setInterval(saveData, 30000); // Guardar cada 30 segundos
 const lastActivity_map = new Map(); // timestamp ultimo mensaje por conversacion
+const humanMode_map = new Map(); // conversaciones donde el admin tomo control (Julia pausada)
 const timeoutChecks = new Map(); // timers activos por conversacion
 
 const TIMEOUT_WARN  = 30 * 60 * 1000;  // 30 minutos -> pregunta si sigue ahi
@@ -1360,6 +1372,17 @@ router.post('/webhook', async function(req, res) {
     if (!conversations.has(convKey)) conversations.set(convKey, []);
     var history = conversations.get(convKey);
 
+    // MODO HUMANO: si el admin/doctor tomo control, guardar el mensaje pero NO dejar que Julia responda
+    if (humanMode_map.get(convKey)) {
+      console.log('[HumanMode] ' + convKey + ' en control humano - Julia pausada, guardando mensaje del paciente');
+      var humanMsgText = msgText || (msgType === 'audio' ? '[Nota de voz]' : msgType === 'image' ? '[Imagen recibida]' : '[Mensaje]');
+      history.push({ role: 'user', content: humanMsgText, timestamp: Date.now() });
+      if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+      lastActivity_map.set(convKey, Date.now());
+      saveData();
+      return;
+    }
+
     var reply;
 
     var wasVoiceMessage = (msgType === 'audio');
@@ -1440,7 +1463,7 @@ router.post('/webhook', async function(req, res) {
       // Detectar si piden ubicacion/direccion/como llegar
       var askingLocation = /ubicaci.n|direcci.n|c.mo llego|como llegar|d.nde est.n|donde est.n|mapa|llegar|c.mo ir|como ir/i.test(msgText || '');
       
-      if (askingLocation && doctor.location) {
+      if (askingLocation && (doctor.location || doctor.key === 'alcantara')) {
         // Enviar texto primero
         history.push({ role: 'user', content: msgText, timestamp: Date.now() });
         if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
@@ -1450,8 +1473,22 @@ router.post('/webhook', async function(req, res) {
         reply = await askClaude(history, doctor, patientAppts, patientNotes);
         history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
         await sendMeta(phone, reply, phoneId, token);
-        // Luego enviar ubicacion
-        await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
+        // Enviar ubicacion segun el doctor
+        if (doctor.key === 'alcantara') {
+          // Detectar cual clinica menciono Julia; si no, enviar ambas
+          var clinicaLoc = getAlcantaraClinicFromText(doctor, reply);
+          if (clinicaLoc && clinicaLoc.lat) {
+            await sendLocation(phone, phoneId, token, clinicaLoc.nombre, clinicaLoc.direccion, clinicaLoc.lat, clinicaLoc.lng);
+          } else if (doctor.clinicas) {
+            // Si no se identifico una sola, enviar ambas ubicaciones
+            for (var ci = 0; ci < doctor.clinicas.length; ci++) {
+              var cl = doctor.clinicas[ci];
+              if (cl.lat) { await sendLocation(phone, phoneId, token, cl.nombre, cl.direccion, cl.lat, cl.lng); }
+            }
+          }
+        } else if (doctor.location) {
+          await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
+        }
         console.log('Julia respondio con texto + ubicacion a ' + phone);
         return;
       }
@@ -1525,7 +1562,15 @@ router.post('/webhook', async function(req, res) {
       }
 
       // Enviar ubicacion proactivamente si Julia menciono la direccion
-      if (juliaMentionsAddress(reply) && doctor.location) {
+      if (doctor.key === 'alcantara') {
+        var clinicaProac = getAlcantaraClinicFromText(doctor, reply);
+        if (clinicaProac && clinicaProac.lat) {
+          try {
+            await sendLocation(phone, phoneId, token, clinicaProac.nombre, clinicaProac.direccion, clinicaProac.lat, clinicaProac.lng);
+            console.log('Ubicacion ' + clinicaProac.nombre + ' enviada proactivamente a ' + phone);
+          } catch(e) { console.error('Error enviando ubicacion proactiva:', e.message); }
+        }
+      } else if (juliaMentionsAddress(reply) && doctor.location) {
         try {
           await sendLocation(phone, phoneId, token, doctor.location.name, doctor.location.address, doctor.location.lat, doctor.location.lng);
           console.log('Ubicacion enviada proactivamente a ' + phone);
@@ -1776,6 +1821,40 @@ router.get('/status', function(req, res) {
     doctors: ['Dr. Angel Alcantara', 'Dr. Edwin Batista'],
     active_conversations: conversations.size,
   });
+});
+
+// Endpoint para que el dashboard active/desactive el modo humano (tomar control)
+router.post('/set-mode', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'x-auth-token, Content-Type');
+  try {
+    var phone = (req.body.phone || '').replace(/\D/g, '');
+    var doctorKey = req.body.doctor;
+    var mode = req.body.mode; // 'human' o 'julia'
+    if (!phone || !doctorKey || !mode) {
+      return res.status(400).json({ error: 'Faltan datos: phone, doctor, mode' });
+    }
+    var convKey = doctorKey + '_' + phone;
+    if (mode === 'human') {
+      humanMode_map.set(convKey, true);
+      console.log('[HumanMode] ACTIVADO para ' + convKey);
+    } else {
+      humanMode_map.delete(convKey);
+      console.log('[HumanMode] DESACTIVADO para ' + convKey + ' (Julia retoma)');
+    }
+    res.json({ ok: true, convKey: convKey, mode: mode });
+  } catch(e) {
+    console.error('[set-mode] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Endpoint para consultar que conversaciones estan en modo humano
+router.get('/modes', function(req, res) {
+  res.header('Access-Control-Allow-Origin', '*');
+  var modes = {};
+  humanMode_map.forEach(function(v, k) { modes[k] = 'human'; });
+  res.json({ modes: modes });
 });
 
 module.exports = router;

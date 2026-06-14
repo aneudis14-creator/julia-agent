@@ -845,6 +845,28 @@ async function humanDelay(text) {
   return new Promise(function(resolve) { setTimeout(resolve, totalDelay); });
 }
 
+// Muestra el indicador "escribiendo..." (3 puntos) al paciente.
+// Se basa en el message_id del mensaje que llego. Dura hasta 25s o hasta que Julia responde.
+async function sendTypingIndicator(messageId, phoneId, token) {
+  try {
+    if (!messageId || !phoneId || !token) return;
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      {
+        messaging_product: 'whatsapp',
+        status: 'read',
+        message_id: messageId,
+        typing_indicator: { type: 'text' }
+      },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) {
+    // No es critico: si falla, Julia igual responde
+    var tErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Typing] no se pudo mostrar escribiendo:', tErr);
+  }
+}
+
 async function sendMeta(to, body, phoneId, token) {
   try {
     // Simular tiempo de escritura humano antes de enviar
@@ -1371,6 +1393,12 @@ router.post('/webhook', async function(req, res) {
     var convKey = doctor.key + '_' + phone;
     if (!conversations.has(convKey)) conversations.set(convKey, []);
     var history = conversations.get(convKey);
+
+    // Mostrar "escribiendo..." (3 puntos) al paciente mientras Julia prepara la respuesta
+    // Solo si NO esta en modo humano (si el doctor tomo control, no mostramos que "Julia escribe")
+    if (!humanMode_map.get(convKey) && message.id) {
+      sendTypingIndicator(message.id, phoneId, token);
+    }
 
     // MODO HUMANO: si el admin/doctor tomo control, guardar el mensaje pero NO dejar que Julia responda
     if (humanMode_map.get(convKey)) {

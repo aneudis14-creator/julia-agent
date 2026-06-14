@@ -841,7 +841,7 @@ async function humanDelay(text) {
   var baseDelay = Math.min(charCount * 30, 3500); // max 3.5 segundos
   // Agregar variacion aleatoria (+/- 20%) para naturalidad
   var variation = (Math.random() * 0.4 - 0.2) * baseDelay;
-  var totalDelay = Math.max(800, baseDelay + variation); // minimo 0.8s
+  var totalDelay = Math.max(1500, baseDelay + variation); // minimo 1.5s (para que se vean los 3 puntos)
   return new Promise(function(resolve) { setTimeout(resolve, totalDelay); });
 }
 
@@ -860,6 +860,7 @@ async function sendTypingIndicator(messageId, phoneId, token) {
       },
       { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
     );
+    console.log('[Typing] escribiendo... mostrado (msg ' + messageId.substring(0,15) + ')');
   } catch (err) {
     // No es critico: si falla, Julia igual responde
     var tErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
@@ -1396,8 +1397,12 @@ router.post('/webhook', async function(req, res) {
 
     // Mostrar "escribiendo..." (3 puntos) al paciente mientras Julia prepara la respuesta
     // Solo si NO esta en modo humano (si el doctor tomo control, no mostramos que "Julia escribe")
+    // Se ESPERA (await) para que WhatsApp lo registre ANTES de que Julia responda,
+    // si no, en respuestas rapidas el mensaje sale antes y los puntos no se ven.
+    var typingShownAt = 0;
     if (!humanMode_map.get(convKey) && message.id) {
-      sendTypingIndicator(message.id, phoneId, token);
+      await sendTypingIndicator(message.id, phoneId, token);
+      typingShownAt = Date.now();
     }
 
     // MODO HUMANO: si el admin/doctor tomo control, guardar el mensaje pero NO dejar que Julia responda

@@ -1907,4 +1907,128 @@ router.get('/modes', function(req, res) {
   res.json({ modes: modes });
 });
 
+
+// ═══════════════════════════════════════════════════════════════
+//  EVOLUTION API - Solo para la Julia del Dr. Guido (NO toca Meta)
+// ═══════════════════════════════════════════════════════════════
+
+// Envia texto por Evolution API. delay+presence muestra "escribiendo..." automaticamente.
+async function sendEvolutionText(to, body) {
+  try {
+    var url = process.env.EVOLUTION_URL;
+    var apikey = process.env.EVOLUTION_API_KEY;
+    var instance = process.env.EVOLUTION_INSTANCE_GUIDO || 'guido';
+    if (!url || !apikey) { console.error('[Evolution] Falta EVOLUTION_URL o EVOLUTION_API_KEY'); return; }
+    await axios.post(
+      url.replace(/\/$/, '') + '/message/sendText/' + instance,
+      { number: to, text: body, delay: 1600, presence: 'composing', linkPreview: false },
+      { headers: { 'apikey': apikey, 'Content-Type': 'application/json' } }
+    );
+    console.log('[Evolution] Julia (Guido) respondio a ' + to);
+  } catch (err) {
+    var eErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Evolution] ERROR enviando a ' + to + ': ' + eErr);
+  }
+}
+
+// Muestra "escribiendo..." de inmediato (antes de que Claude responda)
+async function sendEvolutionTyping(to) {
+  try {
+    var url = process.env.EVOLUTION_URL;
+    var apikey = process.env.EVOLUTION_API_KEY;
+    var instance = process.env.EVOLUTION_INSTANCE_GUIDO || 'guido';
+    if (!url || !apikey) return;
+    await axios.post(
+      url.replace(/\/$/, '') + '/chat/sendPresence/' + instance,
+      { number: to, presence: 'composing', delay: 2000 },
+      { headers: { 'apikey': apikey, 'Content-Type': 'application/json' } }
+    );
+  } catch (err) { /* no critico */ }
+}
+
+// Webhook que recibe los mensajes desde Evolution API (instancia de Guido)
+router.post('/evolution', async function(req, res) {
+  res.sendStatus(200);
+  try {
+    var body = req.body || {};
+    // Solo nos interesan mensajes nuevos entrantes
+    if (body.event !== 'messages.upsert') return;
+    var data = body.data;
+    if (!data || !data.key) return;
+    if (data.key.fromMe) return; // ignorar mensajes que enviamos nosotros
+
+    var remoteJid = data.key.remoteJid || '';
+    if (remoteJid.indexOf('@g.us') >= 0) return; // ignorar grupos
+    if (remoteJid.indexOf('status@') >= 0) return; // ignorar estados
+    var phone = remoteJid.split('@')[0].replace(/\D/g, '');
+    if (!phone) return;
+
+    var msg = data.message || {};
+    var msgText = msg.conversation
+              || (msg.extendedTextMessage && msg.extendedTextMessage.text)
+              || (msg.imageMessage && msg.imageMessage.caption)
+              || '';
+    var msgType = 'text';
+    if (msg.audioMessage) msgType = 'audio';
+    else if (msg.imageMessage) msgType = 'image';
+    var pushName = data.pushName || '';
+
+    console.log('[Evolution] ' + phone + ' -> Guido | ' + msgType + ' | ' + (msgText || '').substring(0, 40));
+
+    // Objeto doctor de Guido (key 'guido' activa getGuidoPrompt via buildSystemPrompt)
+    var doctor = {
+      key: 'guido',
+      nombre: 'Proyecto Dr. Guido Gomez Mazara',
+      owner_phone: '18495977333',
+      owner_name: 'Equipo Guido',
+      tono: 'formal_calido'
+    };
+
+    var convKey = 'guido_' + phone;
+    if (!conversations.has(convKey)) conversations.set(convKey, []);
+    var history = conversations.get(convKey);
+
+    // MODO HUMANO: si el equipo tomo control, guardar pero no responder
+    if (humanMode_map.get(convKey)) {
+      var humanTxt = msgText || (msgType === 'audio' ? '[Nota de voz]' : msgType === 'image' ? '[Imagen]' : '[Mensaje]');
+      history.push({ role: 'user', content: humanTxt, timestamp: Date.now() });
+      if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+      lastActivity_map.set(convKey, Date.now());
+      saveData();
+      console.log('[Evolution] ' + convKey + ' en modo humano - Julia pausada');
+      return;
+    }
+
+    // Mostrar "escribiendo..." de inmediato
+    sendEvolutionTyping(phone);
+
+    var reply;
+    if (msgType === 'text') {
+      history.push({ role: 'user', content: msgText || 'Hola', timestamp: Date.now() });
+      if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+      var pa = await getPatientAppointments('guido', phone);
+      var pn = getPatientNotes('guido', phone);
+      reply = await askClaude(history, doctor, pa, pn);
+    } else {
+      history.push({ role: 'user', content: '[' + (msgType === 'audio' ? 'Nota de voz' : 'Imagen') + ' recibida]', timestamp: Date.now() });
+      if (history.length > MAX_HISTORY) history.splice(0, history.length - MAX_HISTORY);
+      reply = 'Disculpe, por ahora solo puedo leer mensajes de texto. Por favor escribame su consulta y con gusto le ayudo.';
+    }
+
+    if (reply) {
+      history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
+      await sendEvolutionText(phone, reply);
+      lastActivity_map.set(convKey, Date.now());
+      // Guardar datos del contacto (el nombre viene gratis en pushName de WhatsApp)
+      if (!clientData.has(convKey)) clientData.set(convKey, { phone: phone, doctor: 'guido', firstSeen: Date.now(), name: pushName || null });
+      var cd = clientData.get(convKey);
+      if (pushName && !cd.name) cd.name = pushName;
+      saveData();
+    }
+  } catch (e) {
+    console.error('[Evolution] ERROR webhook:', e.message);
+  }
+});
+
+
 module.exports = router;

@@ -103,6 +103,7 @@ function getCalendarForDoctor(doctorKey) {
     if (doctorKey === 'quiropedia') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_QUIROPEDIA;
     else if (doctorKey === 'alcantara') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_ALCANTARA;
     else if (doctorKey === 'batista') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_BATISTA;
+    else if (doctorKey === 'guido') refreshToken = process.env.GOOGLE_REFRESH_TOKEN_GUIDO;
   }
 
   if (!refreshToken || refreshToken === 'pending') {
@@ -221,9 +222,11 @@ async function notifyOwnerNewAppointment(doctor, info, patientPhone, calendarLin
     }
     var token = doctor.key === 'quiropedia' ? process.env.META_TOKEN_QUIROPEDIA :
                 doctor.key === 'batista' ? process.env.META_TOKEN_BATISTA :
+                doctor.key === 'guido' ? process.env.META_TOKEN_GUIDO :
                 process.env.META_TOKEN_ALCANTARA;
     var phoneId = doctor.key === 'quiropedia' ? (process.env.META_PHONE_ID_QUIROPEDIA || '1029094683628420') :
                   doctor.key === 'batista' ? process.env.META_PHONE_ID_BATISTA :
+                  doctor.key === 'guido' ? process.env.META_PHONE_ID_GUIDO :
                   process.env.META_PHONE_ID_ALCANTARA;
     if (!token || !phoneId) {
       console.log('[Notify] Falta token o phoneId para notificar a ' + doctor.owner_name);
@@ -524,6 +527,18 @@ function getDoctorByPhoneId(phoneId) {
         lat: 18.4948,
         lng: -69.7468
       },
+    };
+  }
+  if (phoneId === process.env.META_PHONE_ID_GUIDO) {
+    return {
+      key: 'guido',
+      nombre: 'Proyecto Dr. Guido Gomez Mazara',
+      especialidad: 'Asistente del movimiento politico (PRM - G28)',
+      whatsapp_directo: '849-597-7333',
+      emergencias: null,
+      owner_phone: '18495977333',
+      owner_name: 'Equipo Guido',
+      tono: 'formal_calido',
     };
   }
   if (phoneId === process.env.META_PHONE_ID_BATISTA) {
@@ -1380,6 +1395,8 @@ router.post('/webhook', async function(req, res) {
       token = process.env.META_TOKEN_QUIROPEDIA;
     } else if (doctor.key === 'batista') {
       token = process.env.META_TOKEN_BATISTA;
+    } else if (doctor.key === 'guido') {
+      token = process.env.META_TOKEN_GUIDO;
     } else {
       token = process.env.META_TOKEN_ALCANTARA;
     }

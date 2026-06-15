@@ -1919,12 +1919,13 @@ async function sendEvolutionText(to, body) {
     var apikey = process.env.EVOLUTION_API_KEY;
     var instance = process.env.EVOLUTION_INSTANCE_GUIDO || 'guido';
     if (!url || !apikey) { console.error('[Evolution] Falta EVOLUTION_URL o EVOLUTION_API_KEY'); return; }
-    await axios.post(
+    var resp = await axios.post(
       url.replace(/\/$/, '') + '/message/sendText/' + instance,
-      { number: to, text: body, delay: 1600, presence: 'composing', linkPreview: false },
+      { number: to, text: body },
       { headers: { 'apikey': apikey, 'Content-Type': 'application/json' } }
     );
-    console.log('[Evolution] Julia (Guido) respondio a ' + to);
+    var st = resp && resp.data ? (resp.data.status || (resp.data.key ? 'enviado(key)' : 'ok')) : 'sin-respuesta';
+    console.log('[Evolution] Julia (Guido) respondio a ' + to + ' | status=' + st + ' | resp=' + JSON.stringify(resp && resp.data ? resp.data : {}).substring(0, 200));
   } catch (err) {
     var eErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
     console.error('[Evolution] ERROR enviando a ' + to + ': ' + eErr);

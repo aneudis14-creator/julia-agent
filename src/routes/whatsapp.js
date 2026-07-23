@@ -883,6 +883,46 @@ async function sendTypingIndicator(messageId, phoneId, token) {
   }
 }
 
+// Envia el menu interactivo de motivo de contacto (Dr. Alcantara).
+// El paciente puede TOCAR la opcion o escribir el numero.
+async function sendMenuMotivo(to, phoneId, token) {
+  try {
+    await axios.post(
+      'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
+      {
+        messaging_product: 'whatsapp',
+        to: to,
+        type: 'interactive',
+        interactive: {
+          type: 'list',
+          body: { text: 'Se comunica con nosotros por:\n\n1. Cita\n2. Seguimiento\n3. Quirurgico\n4. Post quirurgico\n\nPuede tocar el boton de abajo o escribir el numero.' },
+          action: {
+            button: 'Ver opciones',
+            sections: [{
+              title: 'Motivo de contacto',
+              rows: [
+                { id: 'motivo_cita',      title: '1. Cita',           description: 'Consulta nueva con el Dr.' },
+                { id: 'motivo_seguim',    title: '2. Seguimiento',    description: 'Continuidad de su caso' },
+                { id: 'motivo_quir',      title: '3. Quirurgico',     description: 'Evaluacion o cirugia' },
+                { id: 'motivo_postquir',  title: '4. Post quirurgico', description: 'Control despues de cirugia' }
+              ]
+            }]
+          }
+        }
+      },
+      { headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' } }
+    );
+    console.log('[Menu] Menu de motivo enviado a ' + to);
+  } catch (err) {
+    var mErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
+    console.error('[Menu] ERROR enviando menu a ' + to + ': ' + mErr);
+    // Fallback: si el menu interactivo falla, mandar el texto plano
+    try {
+      await sendMeta(to, 'Se comunica con nosotros por:\n\n1. Cita\n2. Seguimiento\n3. Quirurgico\n4. Post quirurgico\n\nPor favor indiqueme el numero.', phoneId, token);
+    } catch(e2) {}
+  }
+}
+
 async function sendMeta(to, body, phoneId, token) {
   try {
     // Simular tiempo de escritura humano antes de enviar
@@ -1408,6 +1448,19 @@ router.post('/webhook', async function(req, res) {
     var msgText = (message.text && message.text.body) || '';
     var phoneId = value.metadata && value.metadata.phone_number_id;
 
+    // Si el paciente TOCO una opcion del menu interactivo, tratarlo como texto normal
+    if (msgType === 'interactive' && message.interactive) {
+      var inter = message.interactive;
+      var picked = (inter.list_reply && (inter.list_reply.title || inter.list_reply.id))
+                || (inter.button_reply && (inter.button_reply.title || inter.button_reply.id))
+                || '';
+      if (picked) {
+        msgText = picked;
+        msgType = 'text';
+        console.log('[Menu] Paciente selecciono: ' + picked);
+      }
+    }
+
     // PRIMERO identificar al doctor (usando doctors.js, no env vars)
     var doctor = getDoctorByPhoneId(phoneId);
     console.log('WhatsApp [' + phone + '] -> ' + doctor.nombre + ' | ' + msgType);
@@ -1581,8 +1634,15 @@ router.post('/webhook', async function(req, res) {
     }
 
     if (reply) {
+      // Si Julia pidio mostrar el menu de motivos (Dr. Alcantara), lo enviamos como lista tocable
+      var mostrarMenu = false;
+      if (reply.indexOf('[MENU_MOTIVO]') !== -1) {
+        mostrarMenu = (doctor.key === 'alcantara');
+        reply = reply.replace(/\[MENU_MOTIVO\]/g, '').trim();
+      }
       history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
-      await sendMeta(phone, reply, phoneId, token);
+      if (reply) await sendMeta(phone, reply, phoneId, token);
+      if (mostrarMenu) await sendMenuMotivo(phone, phoneId, token);
       if (citaConfirmada(reply)) {
         await alertDoctor(doctor, phone, history, phoneId, token);
       }

@@ -156,7 +156,7 @@ function detectAppointmentConfirmation(text, conversationHistory) {
   console.log('[Calendar] Analizando texto:', normalizedText.substring(0, 150));
   
   // Detectar confirmacion
-  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos', 'nos vemos el', 'hasta el', 'la espero el', 'lo espero el', 'reservada para', 'agendada para', 'agendado para', 'confirmada para'];
+  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos', 'nos vemos el', 'hasta el', 'la espero el', 'lo espero el', 'reservada para', 'agendada para', 'agendado para', 'confirmada para', 'queda registrad', 'registrada para', 'registrado para', 'su visita queda', 'su cita queda'];
   var hasConfirm = confirmKeywords.some(function(k) { return normalizedText.indexOf(k) !== -1; });
   if (!hasConfirm) {
     console.log('[Calendar] No es confirmacion de cita');
@@ -969,15 +969,38 @@ function resetTimeout(convKey, phone, phoneId, token, doctor) {
   const now = Date.now();
   lastActivity_map.set(convKey, now);
 
-  // Funcion para detectar si Julia ya se despidio
+  // Funcion para detectar si la conversacion ya se cerro (Julia se despidio O el paciente se despidio)
   function juliaAlreadyClosed(history) {
     if (!history || history.length === 0) return false;
-    var lastMsgs = history.slice(-3); // ultimas 3 respuestas
-    var closeKeywords = ['quedo a la orden', 'estamos a la orden', 'con gusto le atendemos', 'aqui estamos', 'que tenga buen dia', 'que tenga buenos', 'nos vemos', 'le esperamos el', 'queda agendad'];
+    var lastMsgs = history.slice(-4); // ultimos 4 mensajes de la conversacion
+
+    // Frases de cierre de Julia
+    var closeJulia = [
+      'quedo a la orden', 'quedamos a la orden', 'estamos a la orden', 'con gusto le atendemos',
+      'aqui estamos', 'que tenga buen dia', 'que tenga buenos', 'que tenga excelente',
+      'que tenga un excelente', 'nos vemos', 'le esperamos', 'la esperamos', 'lo esperamos',
+      'queda agendad', 'queda registrad', 'cualquier cosa quedo', 'cualquier duda quedo',
+      'hasta luego', 'hasta pronto', 'feliz dia', 'feliz tarde', 'feliz noche',
+      'bendiciones', 'un placer', 'con mucho gusto le atendimos'
+    ];
+    // Despedidas del paciente
+    var closePaciente = [
+      'gracias', 'muchas gracias', 'ok gracias', 'listo gracias', 'ya esta', 'perfecto gracias',
+      'bendiciones', 'hasta luego', 'hasta pronto', 'nos vemos', 'ok listo', 'esta bien gracias',
+      'dios le bendiga', 'dios te bendiga', 'muy amable', 'excelente gracias'
+    ];
+
     return lastMsgs.some(function(m) {
-      if (m.role !== 'assistant') return false;
-      var text = (m.content || '').toLowerCase();
-      return closeKeywords.some(function(k) { return text.indexOf(k) !== -1; });
+      var text = (m.content || '').toLowerCase().trim();
+      if (!text) return false;
+      if (m.role === 'assistant') {
+        return closeJulia.some(function(k) { return text.indexOf(k) !== -1; });
+      }
+      // Mensaje del paciente: solo cuenta como despedida si es un mensaje corto de cierre
+      if (m.role === 'user' && text.length <= 45) {
+        return closePaciente.some(function(k) { return text.indexOf(k) !== -1; });
+      }
+      return false;
     });
   }
 

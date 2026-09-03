@@ -133,12 +133,142 @@ function getAlcantaraClinicFromText(doctor, text) {
   var t = text.toLowerCase();
   var mencionaCorominas = /corominas|aliro paulino|ensanche naco/.test(t);
   var mencionaOsler = /osler|jose lopez|josé lópez|los prados/.test(t);
+  // Si menciona AMBAS clinicas (ej: el ofrecimiento inicial con las 2 opciones),
+  // no enviamos ubicacion todavia - el paciente aun no eligio cual quiere.
+  if (mencionaCorominas && mencionaOsler) return null;
   if (mencionaCorominas) return doctor.clinicas[0];
   if (mencionaOsler) return doctor.clinicas[1];
   return null;
 }
 
-function detectAppointmentConfirmation(text, conversationHistory) {
+// Valida que un texto sea razonablemente un nombre de persona real.
+// Se usa en TODOS los lugares donde se detecta/guarda un nombre de paciente,
+// para que Julia NUNCA guarde "Le coordino", "9102", etc. como si fuera un nombre.
+// ── VALIDACION DE NOMBRES DE PACIENTES ─────────────────────────────────
+// Evita que se guarden cosas como "Le coordino", "Le cuento" o numeros como
+// si fueran el nombre del paciente, SIN rechazar nombres dominicanos reales
+// compuestos ("Juan de la Cruz", "Ana de los Santos").
+
+// 1) Si el texto COMPLETO es una de estas, no es un nombre.
+var NAME_EXACT_BLACKLIST = [
+  'julia','doctor','doctora','dr','dra','paciente','cliente','señor','senor','señora','senora',
+  'gracias','hola','buenas','ok','okay','si','no','ya','bien','claro','listo','vale','perfecto',
+  'entendido','correcto','gusto','cita','consulta','seguro','privado','usted','yo'
+];
+
+// 2) Si EMPIEZA con una de estas, no es un nombre (verbos, saludos, particulas).
+var NAME_FIRSTWORD_BLACKLIST = [
+  'le','les','lo','me','mi','te','se','un','una','unos','unas','el','ella','ellos',
+  'hola','buenas','buenos','buen','bueno','buena','gracias','perfecto','ok','okay','si','no','ya',
+  'bien','claro','listo','vale','entendido','correcto','disculpe','disculpa','perdon','perdón',
+  'quiero','puedo','tengo','necesito','quisiera','deseo','busco','vengo','voy','estoy','seria','sería',
+  'donde','dónde','cuando','cuándo','como','cómo','que','qué','cual','cuál','cuanto','cuánto','cuanta','cuánta','porque','por',
+  'para','con','sin','es','esta','está','son','fue','hay','dr','dra','doctor','doctora','sr','sra',
+  'paciente','cita','citas','consulta','horario','horarios','precio','precios','costo',
+  'manana','mañana','hoy','ayer','tarde','noche','dia','día',
+  'lunes','martes','miercoles','miércoles','jueves','viernes','sabado','sábado','domingo',
+  'gusto','coordino','cuento','favor','ayuda','informacion','información','quisiera'
+];
+
+// 3) Si CUALQUIER palabra es una de estas, no es un nombre.
+//    OJO: aqui NO van 'de','la','los','las','del' porque si aparecen en
+//    nombres dominicanos reales (Juan de la Cruz, Ana de los Santos).
+var NAME_ANYWORD_BLACKLIST = [
+  'coordino','cuento','quiero','puedo','tengo','necesito','quisiera','gracias','hola',
+  'cita','citas','consulta','horario','horarios','precio','precios','costo','seguro',
+  'doctor','doctora','paciente','disculpe','disculpa','porque','cuanto','cuánto'
+];
+
+// Quita prefijos como "soy", "me llamo", "mi nombre es" para quedarse con el nombre.
+function stripNamePrefix(text) {
+  if (!text) return '';
+  var t = String(text).trim();
+  var prefixes = [
+    /^me\s+llamo\s+/i, /^mi\s+nombre\s+es\s+/i, /^mi\s+nombre\s+/i,
+    /^yo\s+soy\s+/i, /^soy\s+/i, /^es\s+/i, /^habla\s+/i, /^le\s+habla\s+/i
+  ];
+  for (var i = 0; i < prefixes.length; i++) {
+    if (prefixes[i].test(t)) { t = t.replace(prefixes[i], '').trim(); break; }
+  }
+  return t;
+}
+
+function isValidPatientName(name) {
+  if (!name || typeof name !== 'string') return false;
+  var trimmed = stripNamePrefix(name).trim().replace(/[.,;:]+$/, '');
+  if (trimmed.length < 3 || trimmed.length > 45) return false;
+  if (/[0-9]/.test(trimmed)) return false;                                  // nunca numeros
+  if (!/^[A-Za-zÁÉÍÓÚÜÑáéíóúüñ\s'\-]+$/.test(trimmed)) return false;        // solo letras/espacio/guion/apostrofe
+
+  var lower = trimmed.toLowerCase();
+  if (NAME_EXACT_BLACKLIST.indexOf(lower) !== -1) return false;             // el texto completo es una palabra comun
+
+  var words = trimmed.split(/\s+/);
+  if (words.length > 5) return false;                                       // una frase larga no es un nombre
+  if (NAME_FIRSTWORD_BLACKLIST.indexOf(words[0].toLowerCase()) !== -1) return false;
+
+  for (var i = 0; i < words.length; i++) {
+    if (NAME_ANYWORD_BLACKLIST.indexOf(words[i].toLowerCase()) !== -1) return false;
+  }
+  // Debe existir al menos una palabra "real" de 3+ letras
+  if (!words.some(function(x) { return x.length >= 3; })) return false;
+  return true;
+}
+
+// ── CAPTURA DE CORREO Y CUMPLEANOS (solo dia y mes, NUNCA el año) ────────
+// Se usa en la campana de actualizacion de datos de Quiropedia.
+
+function extractEmail(text) {
+  if (!text) return null;
+  var m = String(text).match(/[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/);
+  if (!m) return null;
+  var email = m[0].toLowerCase().replace(/[.,;:]+$/, '');
+  if (email.length > 80) return null;
+  return email;
+}
+
+var MESES_ES = {
+  'enero':1,'ene':1,'febrero':2,'feb':2,'marzo':3,'mar':3,'abril':4,'abr':4,
+  'mayo':5,'may':5,'junio':6,'jun':6,'julio':7,'jul':7,'agosto':8,'ago':8,
+  'septiembre':9,'setiembre':9,'sep':9,'sept':9,'octubre':10,'oct':10,
+  'noviembre':11,'nov':11,'diciembre':12,'dic':12
+};
+var MESES_NOMBRE = ['','enero','febrero','marzo','abril','mayo','junio','julio',
+                    'agosto','septiembre','octubre','noviembre','diciembre'];
+
+// Devuelve "15 de marzo" o null. NUNCA guarda ni devuelve el año.
+function extractBirthday(text) {
+  if (!text) return null;
+  var t = String(text).toLowerCase()
+    .replace(/[áà]/g,'a').replace(/[éè]/g,'e').replace(/[íì]/g,'i')
+    .replace(/[óò]/g,'o').replace(/[úù]/g,'u');
+
+  var dia = null, mes = null;
+
+  // Formato "15 de marzo" / "15 marzo" / "marzo 15"
+  var m1 = t.match(/\b(\d{1,2})\s*(?:de\s+)?([a-z]+)/);
+  if (m1 && MESES_ES[m1[2]]) { dia = parseInt(m1[1],10); mes = MESES_ES[m1[2]]; }
+  if (dia === null) {
+    var m2 = t.match(/\b([a-z]+)\s+(\d{1,2})\b/);
+    if (m2 && MESES_ES[m2[1]]) { mes = MESES_ES[m2[1]]; dia = parseInt(m2[2],10); }
+  }
+  // Formato numerico "15/03" o "15-03" (ignora cualquier año que venga detras)
+  if (dia === null) {
+    var m3 = t.match(/\b(\d{1,2})\s*[\/\-]\s*(\d{1,2})\b/);
+    if (m3) { dia = parseInt(m3[1],10); mes = parseInt(m3[2],10); }
+  }
+
+  if (dia === null || mes === null) return null;
+  if (mes < 1 || mes > 12) return null;
+  if (dia < 1 || dia > 31) return null;
+  // Validar dias por mes (sin año, febrero se permite hasta 29)
+  var maxDia = [0,31,29,31,30,31,30,31,31,30,31,30,31][mes];
+  if (dia > maxDia) return null;
+
+  return dia + ' de ' + MESES_NOMBRE[mes];
+}
+
+function detectAppointmentConfirmation(text, conversationHistory, knownName) {
   if (!text) return null;
   
   // Normalizar texto: quitar tildes y bajar a minusculas
@@ -156,7 +286,7 @@ function detectAppointmentConfirmation(text, conversationHistory) {
   console.log('[Calendar] Analizando texto:', normalizedText.substring(0, 150));
   
   // Detectar confirmacion
-  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos', 'nos vemos el', 'hasta el', 'la espero el', 'lo espero el', 'reservada para', 'agendada para', 'agendado para', 'confirmada para', 'queda registrad', 'registrada para', 'registrado para', 'su visita queda', 'su cita queda'];
+  var confirmKeywords = ['queda agendad', 'esta agendad', 'cita confirmada', 'le esperamos', 'le esperaremos', 'nos vemos el', 'hasta el', 'la espero el', 'lo espero el', 'reservada para', 'agendada para', 'agendado para', 'confirmada para', 'queda registrad', 'registrada para', 'registrado para', 'su visita queda', 'su cita queda', 'tomado nota de su interes', 'tomado nota de su interés', 'anotado su solicitud', 'anote su solicitud', 'quedara en la agenda', 'quedará en la agenda'];
   var hasConfirm = confirmKeywords.some(function(k) { return normalizedText.indexOf(k) !== -1; });
   if (!hasConfirm) {
     console.log('[Calendar] No es confirmacion de cita');
@@ -166,12 +296,15 @@ function detectAppointmentConfirmation(text, conversationHistory) {
   console.log('[Calendar] Confirmacion detectada!');
   
   var info = { name: null, date: null, time: null };
-  
-  // Buscar nombre - "Perfecto [Nombre]"
-  var nameMatch = text.match(/(?:perfecto|gusto)[,\s]+([A-ZÁÉÍÓÚÑa-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑa-záéíóúñ]+)?)/i);
-  if (nameMatch) {
-    info.name = nameMatch[1].trim();
-    console.log('[Calendar] Nombre:', info.name);
+
+  // El nombre NUNCA se adivina con regex sobre el texto (eso causaba errores como
+  // guardar "Le coordino" o numeros como nombre). Solo se usa el nombre YA
+  // validado y confirmado que el sistema tiene guardado para este paciente.
+  if (knownName && isValidPatientName(knownName)) {
+    info.name = knownName.trim();
+    console.log('[Calendar] Nombre (validado):', info.name);
+  } else {
+    console.log('[Calendar] Sin nombre validado aun - la cita se registra sin nombre');
   }
   
   // Buscar dia (sin tildes)
@@ -199,7 +332,21 @@ function detectAppointmentConfirmation(text, conversationHistory) {
       break;
     }
   }
-  
+
+  // Detectar clinica mencionada (solo relevante para Dr. Alcantara) y si es
+  // una SOLICITUD pendiente de confirmar por la clinica (Osler) o una visita
+  // ya registrada por Julia (Corominas). Esto evita que el calendario del Dr.
+  // diga "cita confirmada" cuando en realidad Osler debe confirmarla.
+  info.clinica = null;
+  info.esSolicitud = false;
+  if (normalizedText.indexOf('osler') !== -1) {
+    info.clinica = 'Osler MED';
+    info.esSolicitud = true; // Osler: Julia NO confirma, solo registra el interes
+  } else if (normalizedText.indexOf('corominas') !== -1) {
+    info.clinica = 'Corominas Pepin';
+    info.esSolicitud = false; // Corominas: registro real de visita (orden de llegada)
+  }
+
   console.log('[Calendar] Info final:', JSON.stringify(info));
   return info;
 }
@@ -232,11 +379,14 @@ async function notifyOwnerNewAppointment(doctor, info, patientPhone, calendarLin
       console.log('[Notify] Falta token o phoneId para notificar a ' + doctor.owner_name);
       return;
     }
-    var mensaje = '🗓️ *Nueva cita agendada por Julia*\n\n' +
+    var tituloNotif = info.esSolicitud ? '🗓️ *Nueva SOLICITUD de cita (pendiente confirmar - Osler)*' : '🗓️ *Nueva cita/visita registrada por Julia*';
+    var mensaje = tituloNotif + '\n\n' +
       '👤 Paciente: ' + (info.name || 'Sin nombre') + '\n' +
       '📱 Telefono: +' + patientPhone + '\n' +
+      (info.clinica ? '🏥 Clinica: ' + info.clinica + '\n' : '') +
       '📅 Fecha: ' + info.date + '\n' +
       '⏰ Hora: ' + info.time + '\n' +
+      (info.esSolicitud ? '\n⚠️ El paciente aun debe confirmar directamente con Osler MED (809-796-2941).' : '') +
       (calendarLink ? '\n🔗 ' + calendarLink : '');
     await axios.post(
       'https://graph.facebook.com/v20.0/' + phoneId + '/messages',
@@ -271,9 +421,17 @@ async function createCalendarEvent(doctorKey, info, phone) {
     var businessName = doctorKey === 'quiropedia' ? 'Quiropedia RD'
       : doctorKey === 'alcantara' ? 'Dr. Alcantara' : 'Dr. Batista';
 
+    // Titulo del evento: distingue "SOLICITUD" (Osler, pendiente de confirmar por
+    // la clinica) de "Cita" (Corominas, registro real de visita por orden de llegada)
+    var prefijo = info.esSolicitud ? 'SOLICITUD - Pendiente confirmar' : 'Cita';
+    var sufijoClinica = info.clinica ? (' - ' + info.clinica) : '';
+    var notaSolicitud = info.esSolicitud
+      ? '\n⚠️ IMPORTANTE: Esta es una SOLICITUD del paciente para Osler MED. La cita real debe confirmarla la clinica (809-796-2941). Aun no esta confirmada oficialmente.'
+      : '';
+
     var event = {
-      summary: 'Cita ' + businessName + ' - ' + (info.name || 'Paciente'),
-      description: 'Cita agendada por Julia AI\nPaciente: ' + (info.name || 'Sin nombre') + '\nTelefono: +' + phone + '\nServicio: Evaluacion podologica',
+      summary: prefijo + ' ' + businessName + sufijoClinica + ' - ' + (info.name || 'Paciente'),
+      description: 'Generado por Julia AI' + notaSolicitud + '\nPaciente: ' + (info.name || 'Sin nombre') + '\nTelefono: +' + phone + (info.clinica ? '\nClinica: ' + info.clinica : ''),
       start: { dateTime: formatLocalISO(startDate), timeZone: 'America/Santo_Domingo' },
       end: { dateTime: formatLocalISO(endDate), timeZone: 'America/Santo_Domingo' },
       reminders: {
@@ -442,6 +600,22 @@ try {
     var savedClients = JSON.parse(fs.readFileSync(CLIENTS_FILE, 'utf8'));
     Object.keys(savedClients).forEach(function(k) { clientData.set(k, savedClients[k]); });
     console.log('Cargados ' + clientData.size + ' clientes de disco');
+
+    // LIMPIEZA AUTOMATICA: borrar nombres mal guardados de antes (ej: "Le coordino",
+    // "paciente 9102"). No se inventan nombres nuevos, solo se limpia lo invalido
+    // para que no se sigan usando en agenda/calendario.
+    var nombresLimpiados = 0;
+    clientData.forEach(function(cd, key) {
+      if (cd.name && !isValidPatientName(cd.name)) {
+        console.log('[Limpieza] Nombre invalido borrado: "' + cd.name + '" (' + key + ')');
+        cd.name = null;
+        nombresLimpiados++;
+      }
+    });
+    if (nombresLimpiados > 0) {
+      console.log('[Limpieza] Total nombres invalidos corregidos: ' + nombresLimpiados);
+      saveData();
+    }
   }
   if (fs.existsSync(ARCHIVE_FILE)) {
     var savedArchive = JSON.parse(fs.readFileSync(ARCHIVE_FILE, 'utf8'));
@@ -690,8 +864,80 @@ async function askClaude(history, doctor, patientAppts, patientNotes) {
     var claudeErr = err.response && err.response.data ? JSON.stringify(err.response.data) : err.message;
     console.error('[Claude] ERROR status=' + (err.response && err.response.status) + ' | ' + claudeErr);
     console.error('[Claude] Messages enviados:', JSON.stringify(cleanMessages.slice(-3)));
-    // Respuesta de fallback si Claude falla
+
+    // Avisar por correo (con enfriamiento de 30 min para no saturar el correo)
+    notifyClaudeDown(claudeErr).catch(function(){});
+
+    // INTENTAR RESPALDO CON GROQ antes de rendirnos
+    try {
+      var backupReply = await askGroq(systemPrompt, cleanMessages);
+      if (backupReply) {
+        console.log('[Backup] Julia respondio usando Groq (respaldo) mientras Claude esta caido');
+        return backupReply;
+      }
+    } catch(err2) {
+      console.error('[Backup] Groq tambien fallo: ' + (err2.response && err2.response.data ? JSON.stringify(err2.response.data) : err2.message));
+    }
+
+    // Si ni Claude ni Groq responden, ahi si el mensaje de disculpa
     return 'Disculpe, estoy teniendo un problema tecnico momentaneo. Por favor intente de nuevo en unos segundos o llame al ' + (doctor.whatsapp_directo || doctor.emergencias || '');
+  }
+}
+
+// ── GROQ (RESPALDO GRATUITO) - se usa SOLO si Claude falla ──────────────
+async function askGroq(systemPrompt, cleanMessages) {
+  if (!process.env.GROQ_API_KEY) {
+    console.log('[Backup] GROQ_API_KEY no configurada, no hay respaldo disponible');
+    return null;
+  }
+  var groqMessages = [{ role: 'system', content: systemPrompt }].concat(cleanMessages);
+  var res = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+    model: 'openai/gpt-oss-120b',
+    max_tokens: 400,
+    temperature: 0.85,
+    messages: groqMessages,
+  }, {
+    headers: {
+      'Authorization': 'Bearer ' + process.env.GROQ_API_KEY,
+      'Content-Type': 'application/json',
+    }
+  });
+  return res.data.choices[0].message.content;
+}
+
+// ── NOTIFICACION POR CORREO cuando Claude falla (via Resend) ──────────────
+var lastClaudeDownEmailAt = 0;
+async function notifyClaudeDown(errorDetail) {
+  var EMAIL_COOLDOWN = 30 * 60 * 1000; // 30 minutos entre correos, para no saturar
+  var now = Date.now();
+  if (now - lastClaudeDownEmailAt < EMAIL_COOLDOWN) return; // ya se aviso recientemente
+  if (!process.env.RESEND_API_KEY || !process.env.ALERT_EMAIL_TO) {
+    console.log('[Email] RESEND_API_KEY o ALERT_EMAIL_TO no configurados, no se puede avisar por correo');
+    return;
+  }
+  lastClaudeDownEmailAt = now; // marcar YA para evitar carreras si llegan varios mensajes a la vez
+  try {
+    var usandoRespaldo = !!process.env.GROQ_API_KEY;
+    await axios.post('https://api.resend.com/emails', {
+      from: process.env.ALERT_EMAIL_FROM || 'Julia AI <alertas@juliaa.app>',
+      to: [process.env.ALERT_EMAIL_TO],
+      subject: '⚠️ Julia: Claude fallo' + (usandoRespaldo ? ' (respaldo activo)' : ' (SIN respaldo)'),
+      html: '<h2>Julia tuvo un problema con Claude</h2>'
+        + '<p><b>Hora:</b> ' + new Date().toLocaleString('es-DO', { timeZone: 'America/Santo_Domingo' }) + '</p>'
+        + '<p><b>Detalle del error:</b><br>' + String(errorDetail).substring(0, 500) + '</p>'
+        + (usandoRespaldo
+            ? '<p style="color:green"><b>Julia sigue respondiendo</b> usando el sistema de respaldo (Groq) mientras resuelves esto. No es urgente, pero conviene recargar creditos pronto.</p>'
+            : '<p style="color:red"><b>Julia NO tiene respaldo configurado</b> y dejo de responder. Revisa los creditos en console.anthropic.com cuanto antes.</p>')
+        + '<p>Revisa: <a href="https://console.anthropic.com/settings/billing">console.anthropic.com/settings/billing</a></p>',
+    }, {
+      headers: {
+        'Authorization': 'Bearer ' + process.env.RESEND_API_KEY,
+        'Content-Type': 'application/json',
+      }
+    });
+    console.log('[Email] Alerta de Claude caido enviada a ' + process.env.ALERT_EMAIL_TO);
+  } catch (e) {
+    console.error('[Email] ERROR enviando alerta: ' + (e.response && e.response.data ? JSON.stringify(e.response.data) : e.message));
   }
 }
 
@@ -1640,8 +1886,28 @@ router.post('/webhook', async function(req, res) {
         mostrarMenu = (doctor.key === 'alcantara');
         reply = reply.replace(/\[MENU_MOTIVO\]/g, '').trim();
       }
+
+      // Si Julia separo la info de las 2 clinicas (Dr. Alcantara), se manda como 2 mensajes de WhatsApp
+      var partesClinicas = null;
+      if (reply.indexOf('[SEPARAR_CLINICA]') !== -1 && doctor.key === 'alcantara') {
+        partesClinicas = reply.split('[SEPARAR_CLINICA]').map(function(p){ return p.trim(); }).filter(Boolean);
+        reply = partesClinicas.join('\n\n'); // guardamos el texto completo en el historial, para contexto
+      }
+
       history.push({ role: 'assistant', content: reply, timestamp: Date.now() });
-      if (reply) await sendMeta(phone, reply, phoneId, token);
+
+      if (partesClinicas && partesClinicas.length > 1) {
+        // Enviar cada clinica como su propio mensaje de WhatsApp, con una pausa humana entre ellos
+        for (var pc = 0; pc < partesClinicas.length; pc++) {
+          if (pc > 0) {
+            await humanDelay(partesClinicas[pc]);
+          }
+          await sendMeta(phone, partesClinicas[pc], phoneId, token);
+        }
+      } else if (reply) {
+        await sendMeta(phone, reply, phoneId, token);
+      }
+
       if (mostrarMenu) await sendMenuMotivo(phone, phoneId, token);
       if (citaConfirmada(reply)) {
         await alertDoctor(doctor, phone, history, phoneId, token);
@@ -1652,38 +1918,60 @@ router.post('/webhook', async function(req, res) {
       var cData = clientData.get(convKey2);
       
       // Si Julia llamo a alguien por nombre en su respuesta, guardarlo
+      // (SOLO si pasa la validacion estricta de isValidPatientName)
       if (reply && !cData.name) {
-        // Buscar patrones como "Mucho gusto [Nombre]" o "Gracias [Nombre]"
         var nameMatch = reply.match(/(?:gusto|gracias|hola|bienvenid[oa]),?\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]+)?)/i);
         if (nameMatch) {
           var detectedName = nameMatch[1].trim();
-          var skipWords = ['Julia','Como','Cuál','Qué','Cuándo','Cuando','Donde','Cómo','Aneudis'];
-          if (!skipWords.includes(detectedName) && detectedName.length > 2) {
+          if (isValidPatientName(detectedName)) {
             cData.name = detectedName;
-            console.log('Nombre detectado: ' + detectedName + ' para ' + phone);
+            console.log('[Nombre] Detectado y validado: ' + detectedName + ' para ' + phone);
+          } else {
+            console.log('[Nombre] Candidato descartado (no valido): "' + detectedName + '" para ' + phone);
           }
         }
       }
       
       // Detectar si el usuario dio su nombre directamente
+      // (SOLO si pasa la validacion estricta - nunca guarda "Le coordino", numeros, etc.)
       var lastUserMsg = history.filter(function(h) { return h.role === 'user'; }).slice(-1)[0];
-      var skipPhrases = ['hola','buenas','buenos','si','no','ok','okay','gracias','claro','perfecto','bien','este','esto',
-        'quiero','puedo','tengo','donde','cuando','como','que','cual','cuanto','una','uno','soy','me','mi','le','les',
-        'buen','bueno','buena','buenas dias','buenas tardes','buenas noches','buenos dias'];
       if (lastUserMsg && !cData.name) {
         var userText = (lastUserMsg.content || '').trim();
-        var userTextLower = userText.toLowerCase();
-        var words = userText.split(/\s+/);
-        var isSkip = skipPhrases.some(function(s) { return userTextLower === s || userTextLower.startsWith(s + ' '); });
-        // Nombre: 1-4 palabras, empieza con mayuscula, no es saludo
-        if (!isSkip && words.length >= 1 && words.length <= 4 && !userText.includes('?') && !userText.includes('!') && userText.length < 45) {
-          var firstWord = words[0];
-          if (firstWord && firstWord.length > 2 && firstWord[0] === firstWord[0].toUpperCase() && /^[A-ZÁÉÍÓÚÑa-záéíóúñ]+$/.test(firstWord)) {
-            cData.name = userText;
-          }
+        if (!userText.includes('?') && !userText.includes('!') && isValidPatientName(userText)) {
+          // Guardar el nombre LIMPIO (sin "soy", "me llamo", etc.)
+          cData.name = stripNamePrefix(userText).trim().replace(/[.,;:]+$/, '');
+          console.log('[Nombre] Paciente dio su nombre directo (validado): ' + cData.name + ' para ' + phone);
         }
       }
       
+      // CAMPANA DE ACTUALIZACION DE DATOS (solo Quiropedia por ahora):
+      // capturar correo y cumpleanos (dia y mes) si el paciente los comparte
+      if (doctor.key === 'quiropedia' && lastUserMsg) {
+        var textoPaciente = lastUserMsg.content || '';
+        if (!cData.email) {
+          var emailDetectado = extractEmail(textoPaciente);
+          if (emailDetectado) {
+            cData.email = emailDetectado;
+            console.log('[Datos] Correo guardado para ' + phone + ': ' + emailDetectado);
+          }
+        }
+        if (!cData.cumpleanos) {
+          // Solo buscar cumpleanos si el contexto lo sugiere, para no confundir
+          // con fechas de citas ("el 15 de marzo" al agendar)
+          var ctx = textoPaciente.toLowerCase();
+          var juliaPregunto = (reply || '').toLowerCase().indexOf('cumplea') !== -1;
+          var previaJulia = history.filter(function(h){return h.role==='assistant';}).slice(-2)
+                              .some(function(h){ return (h.content||'').toLowerCase().indexOf('cumplea') !== -1; });
+          if (ctx.indexOf('cumple') !== -1 || ctx.indexOf('naci') !== -1 || juliaPregunto || previaJulia) {
+            var cumpleDetectado = extractBirthday(textoPaciente);
+            if (cumpleDetectado) {
+              cData.cumpleanos = cumpleDetectado; // SOLO dia y mes, nunca el año
+              console.log('[Datos] Cumpleanos guardado para ' + phone + ': ' + cumpleDetectado);
+            }
+          }
+        }
+      }
+
       clientData.set(convKey2, cData);
       console.log('Julia respondio a ' + phone);
       saveData();
@@ -1711,7 +1999,8 @@ router.post('/webhook', async function(req, res) {
       }
 
       // Detectar si Julia confirmo una cita y crearla en Google Calendar
-      var apptInfo = detectAppointmentConfirmation(reply, history);
+      // Le pasamos el nombre YA validado del paciente (cData.name), nunca se adivina del texto
+      var apptInfo = detectAppointmentConfirmation(reply, history, cData.name);
       if (apptInfo && apptInfo.date && apptInfo.time) {
         console.log('Cita detectada:', JSON.stringify(apptInfo));
         createCalendarEvent(doctor.key, apptInfo, phone).then(function(result) {
@@ -1788,6 +2077,8 @@ router.get('/conversations', function(req, res) {
       phone: phone,
       doctor: doctorKey,
       name: cData.name || null,
+      email: cData.email || null,
+      cumpleanos: cData.cumpleanos || null,
       firstSeen: cData.firstSeen || null,
       messages: mappedMessages,
       lastMessage: lastMsg ? lastMsg.content : '',
@@ -1934,6 +2225,8 @@ router.get('/clients', function(req, res) {
     clientsList.push({
       id: key,
       name: data.name || null,
+      email: data.email || null,
+      cumpleanos: data.cumpleanos || null,
       phone: data.phone || key.split('_').slice(1).join('_'),
       doctor: data.doctor || key.split('_')[0],
       firstSeen: data.firstSeen || null,
@@ -1950,7 +2243,7 @@ router.get('/status', function(req, res) {
   res.json({
     status: 'active',
     api: 'Meta WhatsApp Cloud API',
-    ai: 'Groq llama-3.3-70b + Whisper',
+    ai: 'Claude Haiku 4.5 (principal) + Groq gpt-oss-120b (respaldo) + Whisper (voz)',
     doctors: ['Dr. Angel Alcantara', 'Dr. Edwin Batista'],
     active_conversations: conversations.size,
   });
@@ -2104,9 +2397,12 @@ router.post('/evolution', async function(req, res) {
       await sendEvolutionText(phone, reply);
       lastActivity_map.set(convKey, Date.now());
       // Guardar datos del contacto (el nombre viene gratis en pushName de WhatsApp)
-      if (!clientData.has(convKey)) clientData.set(convKey, { phone: phone, doctor: 'guido', firstSeen: Date.now(), name: pushName || null });
+      // El pushName de WhatsApp solo se usa si pasa la validacion
+      // (puede venir basura como "Voce", emojis o apodos raros)
+      var pushNameValido = (pushName && isValidPatientName(pushName)) ? pushName.trim() : null;
+      if (!clientData.has(convKey)) clientData.set(convKey, { phone: phone, doctor: 'guido', firstSeen: Date.now(), name: pushNameValido });
       var cd = clientData.get(convKey);
-      if (pushName && !cd.name) cd.name = pushName;
+      if (pushNameValido && !cd.name) cd.name = pushNameValido;
       saveData();
     }
   } catch (e) {

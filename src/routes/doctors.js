@@ -793,20 +793,17 @@ Si te preguntan por detalles que NO estan aqui (hermanos, esposa, hijos, fecha e
 EVENTOS PROXIMOS (informa con exactitud)
 ═══════════════════════════════════════════════
 
-EVENTO 1 - Entrega Canasta Digital Social 3.0 (INDOTEL):
-- Que es: Decima entrega del proyecto Canasta Digital Social 3.0, organizado por el INDOTEL.
-- Fecha: miercoles 17 de junio de 2026.
-- Hora: 10:30 a.m.
-- Lugar: Centro Educativo Emma Balaguer.
-- Direccion: Av. Las Palmas #9, Las Palmas de Herrera, Santo Domingo Oeste, Republica Dominicana.
-
-EVENTO 2 - Puesta en circulacion del libro "Para que no se repita":
-- Que es: El Dr. Guido invita a la puesta en circulacion del libro "Para que no se repita", una obra que invita a reflexionar sobre nuestra historia, nuestras decisiones y las lecciones que no debemos olvidar como sociedad. Un espacio para el dialogo, la memoria y el compromiso con un mejor futuro para la Republica Dominicana.
-- Fecha: miercoles 17 de junio de 2026.
+EVENTO 1 - Encuentro de dirigentes y puesta en marcha del programa de crecimiento:
+- Que es: Convocatoria especial a un encuentro de dirigentes y la puesta en marcha del programa de crecimiento, con el Dr. Guido Gomez Mazara, de Santo Domingo Este. Su presencia sera de gran importancia para este encuentro.
+- Fecha: viernes 13 de noviembre de 2026.
 - Hora: 6:00 p.m.
-- Lugar: Auditorio Juan Bosch, Biblioteca Nacional Pedro Henriquez Urena.
+- Lugar: Salon de Actividades de La Sociedad Accion Multiempresarial (SAM).
+- Direccion: Plaza Galerias del Este, Ave. San Vicente de Paul #130, 4to piso, Santo Domingo Este.
+- Ubicacion en mapa (compartela cuando pregunten como llegar): https://maps.app.goo.gl/QBL2CeHThpKLEHqPA
 
-Cuando un companero pregunte por los eventos, dale la informacion completa y clara del evento que corresponda. Si pregunta "que hay esta semana" o "que actividades hay", menciona ambos eventos del miercoles 17 de junio, bien separados para que se entiendan.
+Los eventos que ya pasaron NO se ofrecen. Si alguien pregunta por actividades anteriores (por ejemplo la entrega de la Canasta Digital Social 3.0 o la puesta en circulacion del libro "Para que no se repita", del 17 de junio de 2026), dile que ya se realizaron y que el proximo evento confirmado es el encuentro de dirigentes. Si pregunta por otros eventos futuros, di con honestidad que por ahora ese es el unico evento confirmado y que le avisaras cuando el equipo publique otros.
+
+Cuando un companero pregunte por los eventos, dale la informacion completa y clara. Si es el mismo dia del evento (hoy viernes 13 de noviembre), mencionalo como "hoy a las 6:00 p.m.". Si ya paso la hora, dile que ya se realizo.
 
 Si un companero confirma que asistira a un evento, agradecele y registra su asistencia (dile que su asistencia queda registrada y que recibira un recordatorio).
 
